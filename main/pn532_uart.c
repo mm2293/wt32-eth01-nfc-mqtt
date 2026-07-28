@@ -412,19 +412,26 @@ esp_err_t pn532_poll_once(pn532_card_t *out_card, uint32_t timeout_ms)
     }
 
     // resp: NbTg(1) Tg(1) SensRes(2) SelRes(1) NFCIDLength(1) NFCID(...) [ATSLength ATS...]
-    if (resp_len < 7) return ESP_ERR_NOT_FOUND;
+    // NFCIDLength steht bei Index 5 (NICHT 6!) -- verifiziert anhand echter
+    // Rohdaten (siehe Kommentar unten und PROTOCOL.md): der vorherige Code
+    // las Index 6 (das erste echte NFCID-Byte) faelschlich als Laenge und
+    // haengte beim Kopieren ATS-Bytes mit in die "UID". Beispiel iPhone-
+    // HomeKey-Session: RAW = 01 01 00 04 20 04 08 6B F6 01 05 78 80 70 02 --
+    // NFCIDLength=resp[5]=04, NFCID=resp[6..9]=08 6B F6 01 (korrekt 4 Byte),
+    // ATSLength=resp[10]=05, ATS=resp[11..14]=78 80 70 02 (T0=78 mit TB/TC,
+    // FWI=8) -- Summe 5+1+4+1+4=15 Byte, exakt resp_len. Mit der alten,
+    // falschen Annahme (NFCIDLength bei Index 6=08) wurden stattdessen 8 Byte
+    // ab Index 7 kopiert (6B F6 01 05 78 80 70 02) und faelschlich als UID
+    // "6BF6010578807002" gemeldet -- exakt die zuvor beobachtete falsche UID.
+    if (resp_len < 6) return ESP_ERR_NOT_FOUND;
 
     // Diagnose: rohe InListPassiveTarget-Antwort komplett loggen, BEVOR
-    // irgendeine Annahme ueber Feld-Offsets angewendet wird -- die ATS-
-    // Berechnung hat widerspruechliche Werte geliefert (z.B. ATSLength=111
-    // bei resp_len=19, oder "keine ATS" bei einem Geraet, das nachweislich
-    // ISO-DEP spricht), das riecht nach einem falschen Offset, nicht nach
-    // fehlenden Daten. Siehe PROTOCOL.md/Session-Notizen.
+    // irgendeine Annahme ueber Feld-Offsets angewendet wird.
     pn532_log_hex("", "InListPassiveTarget RAW", resp, resp_len);
 
     uint8_t tg = resp[1];
-    uint8_t uid_len = resp[6];
-    if (uid_len > sizeof(out_card->uid) || (size_t)(7 + uid_len) > resp_len) {
+    uint8_t uid_len = resp[5];
+    if (uid_len > sizeof(out_card->uid) || (size_t)(6 + uid_len) > resp_len) {
         return ESP_ERR_INVALID_SIZE;
     }
 
@@ -433,7 +440,7 @@ esp_err_t pn532_poll_once(pn532_card_t *out_card, uint32_t timeout_ms)
     out_card->atqa[1] = resp[3];
     out_card->sak = resp[4];
     out_card->uid_len = uid_len;
-    memcpy(out_card->uid, &resp[7], uid_len);
+    memcpy(out_card->uid, &resp[6], uid_len);
     out_card->target_number = tg;
     out_card->iso14443_4 = (out_card->sak & 0x20) != 0;
 
@@ -445,7 +452,7 @@ esp_err_t pn532_poll_once(pn532_card_t *out_card, uint32_t timeout_ms)
     // (siehe pn532_update_response_timeout_from_ats()). TL-Laengenbyte zaehlt
     // sich selbst mit, ats_len = TL - 1.
     s_response_timeout_ms = PN532_RESPONSE_TIMEOUT_DEFAULT_MS;
-    size_t ats_tl_index = (size_t)7 + uid_len;
+    size_t ats_tl_index = (size_t)6 + uid_len;
     if (out_card->iso14443_4 && ats_tl_index < resp_len) {
         uint8_t ats_tl = resp[ats_tl_index];
         if (ats_tl >= 1 && ats_tl_index + ats_tl <= resp_len) {
@@ -606,9 +613,10 @@ static esp_err_t pn532_reactivate_target(void)
     // ATS neu auswerten (wie in pn532_poll_once()) -- dieselbe Karte kann bei
     // der Re-Aktivierung ein anderes Timing melden, und ohne das wuerde ein
     // Default-Timeout stehenbleiben, statt das tatsaechlich per FWI
-    // gemeldete zu verwenden.
-    uint8_t uid_len = resp[6];
-    size_t ats_tl_index = (size_t)7 + uid_len;
+    // gemeldete zu verwenden. NFCIDLength bei Index 5, nicht 6 -- siehe
+    // ausfuehrliche Begruendung/Beispielrechnung in pn532_poll_once().
+    uint8_t uid_len = resp[5];
+    size_t ats_tl_index = (size_t)6 + uid_len;
     if (ats_tl_index < resp_len) {
         uint8_t ats_tl = resp[ats_tl_index];
         if (ats_tl >= 1 && ats_tl_index + ats_tl <= resp_len) {
