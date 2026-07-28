@@ -68,60 +68,62 @@ static void card_event_task(void *pvParameters)
         mqtt_client_setup_publish_card(card.uid, card.uid_len, card.sak, card.atqa,
                                         session_id, card.iso14443_4);
 
-        if (card.iso14443_4) {
-            // APDU-Relay-Schleife: auf weitere Kommandos vom Addon warten und
-            // per InDataExchange an die noch selektierte Karte weiterreichen,
-            // bis das Addon das Endergebnis meldet oder 3s nichts mehr kommt.
-            int apdu_index = 0;
-            while (1) {
-                mqtt_apdu_cmd_t cmd;
-                bool session_ended = false;
-                int64_t t_wait_start_us = esp_timer_get_time();
-                if (!mqtt_client_setup_wait_apdu_cmd(session_id, &cmd, &session_ended, 3000)) {
-                    if (!session_ended) {
-                        ESP_LOGW(TAG, "Session %" PRIu32 ": Timeout, breche APDU-Relay ab", session_id);
-                    }
-                    break;
-                }
-                apdu_index++;
-                int64_t t_cmd_received_us = esp_timer_get_time();
-                ESP_LOGI(TAG, "Session %" PRIu32 ": APDU #%d empfangen (%lld ms seit Erkennung, "
-                              "%lld ms Wartezeit auf diese Nachricht)",
-                         session_id, apdu_index,
-                         (long long)((t_cmd_received_us - t_detect_us) / 1000),
-                         (long long)((t_cmd_received_us - t_wait_start_us) / 1000));
-
-                uint8_t resp[MQTT_APDU_MAX_LEN];
-                size_t resp_len = 0;
-                // Statt eines fest verdrahteten Werts: aus dem FWI in der ATS
-                // der aktuellen Karte/des Geraets berechnetes Timeout (siehe
-                // pn532_get_response_timeout_ms()) -- ein iPhone meldet hier
-                // typischerweise deutlich mehr Zeit als der ISO14443-4-Default,
-                // die es fuer manche Antworten (z.B. HomeKey-Attestation) auch
-                // tatsaechlich braucht.
-                int64_t t_exchange_start_us = esp_timer_get_time();
-                esp_err_t err = pn532_data_exchange(cmd.apdu, cmd.apdu_len, resp, sizeof(resp), &resp_len,
-                                                     pn532_get_response_timeout_ms());
-                int64_t t_exchange_end_us = esp_timer_get_time();
-                ESP_LOGI(TAG, "Session %" PRIu32 ": InDataExchange #%d %s, dauerte %lld ms "
-                              "(%lld ms seit Erkennung)",
-                         session_id, apdu_index, err == ESP_OK ? "OK" : "FEHLGESCHLAGEN",
-                         (long long)((t_exchange_end_us - t_exchange_start_us) / 1000),
-                         (long long)((t_exchange_end_us - t_detect_us) / 1000));
-                if (err == ESP_OK) {
-                    mqtt_client_setup_publish_apdu_response(session_id, true, resp, resp_len, NULL);
-                } else {
-                    ESP_LOGW(TAG, "Session %" PRIu32 ": InDataExchange fehlgeschlagen (%s)", session_id, esp_err_to_name(err));
-                    mqtt_client_setup_publish_apdu_response(session_id, false, NULL, 0, "pn532_data_exchange fehlgeschlagen");
-                }
-            }
-        } else {
-            // Reine UID-/Mifare-Classic-Karten brauchen kein APDU-Relay --
-            // trotzdem kurz auf das Ergebnis warten, damit nicht sofort
-            // weitergepollt (und das Relais evtl. verpasst) wird.
+        // Kommando-Relay-Schleife: auf weitere Kommandos vom Addon warten und
+        // per InDataExchange an die noch selektierte Karte weiterreichen, bis
+        // das Addon das Endergebnis meldet oder 3s nichts mehr kommt.
+        //
+        // WICHTIG: laeuft UNABHAENGIG von card.iso14443_4 -- PN532s
+        // InDataExchange transportiert ISO7816-APDUs (DESFire, HomeKey)
+        // genauso wie native MIFARE-Classic-Kommandos (Auth 0x60/0x61, Read
+        // 0x30, Write 0xA0, siehe mifare_classic_module.py), nur eben ohne
+        // vorherige ATS/ISO14443-4-Aktivierung (siehe auch der analoge
+        // Kommentar in mqtt_bridge.py:_process_card()). Frueher lief das
+        // Relay nur bei iso14443_4-Karten, mit der (seit dem automatischen
+        // Mifare-Classic-Crypto1-Anlernversuch falschen) Annahme "reine UID-/
+        // Mifare-Classic-Karten brauchen kein Relay" -- dadurch ging fuer
+        // Mifare Classic ueberhaupt nie ein Auth-/Read-/Write-Kommando an die
+        // Karte raus, jeder Crypto1-Versuch lief lautlos in ein Timeout und
+        // fiel automatisch (aber ohne echten Versuch) auf UID-Only zurueck.
+        int apdu_index = 0;
+        while (1) {
             mqtt_apdu_cmd_t cmd;
             bool session_ended = false;
-            mqtt_client_setup_wait_apdu_cmd(session_id, &cmd, &session_ended, 2000);
+            int64_t t_wait_start_us = esp_timer_get_time();
+            if (!mqtt_client_setup_wait_apdu_cmd(session_id, &cmd, &session_ended, 3000)) {
+                if (!session_ended) {
+                    ESP_LOGW(TAG, "Session %" PRIu32 ": Timeout, breche Kommando-Relay ab", session_id);
+                }
+                break;
+            }
+            apdu_index++;
+            int64_t t_cmd_received_us = esp_timer_get_time();
+            ESP_LOGI(TAG, "Session %" PRIu32 ": Kommando #%d empfangen (%lld ms seit Erkennung, "
+                          "%lld ms Wartezeit auf diese Nachricht)",
+                     session_id, apdu_index,
+                     (long long)((t_cmd_received_us - t_detect_us) / 1000),
+                     (long long)((t_cmd_received_us - t_wait_start_us) / 1000));
+
+            uint8_t resp[MQTT_APDU_MAX_LEN];
+            size_t resp_len = 0;
+            // Aus dem FWI in der ATS der aktuellen Karte/des Geraets
+            // berechnetes Timeout (siehe pn532_get_response_timeout_ms()) --
+            // bei Karten ohne ATS (z.B. Mifare Classic) greift dessen
+            // konservativer Default-Fallback.
+            int64_t t_exchange_start_us = esp_timer_get_time();
+            esp_err_t err = pn532_data_exchange(cmd.apdu, cmd.apdu_len, resp, sizeof(resp), &resp_len,
+                                                 pn532_get_response_timeout_ms());
+            int64_t t_exchange_end_us = esp_timer_get_time();
+            ESP_LOGI(TAG, "Session %" PRIu32 ": InDataExchange #%d %s, dauerte %lld ms "
+                          "(%lld ms seit Erkennung)",
+                     session_id, apdu_index, err == ESP_OK ? "OK" : "FEHLGESCHLAGEN",
+                     (long long)((t_exchange_end_us - t_exchange_start_us) / 1000),
+                     (long long)((t_exchange_end_us - t_detect_us) / 1000));
+            if (err == ESP_OK) {
+                mqtt_client_setup_publish_apdu_response(session_id, true, resp, resp_len, NULL);
+            } else {
+                ESP_LOGW(TAG, "Session %" PRIu32 ": InDataExchange fehlgeschlagen (%s)", session_id, esp_err_to_name(err));
+                mqtt_client_setup_publish_apdu_response(session_id, false, NULL, 0, "pn532_data_exchange fehlgeschlagen");
+            }
         }
 
         pn532_release_field();
