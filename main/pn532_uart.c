@@ -78,14 +78,23 @@ static uint32_t s_response_timeout_ms = PN532_RESPONSE_TIMEOUT_DEFAULT_MS;
  * siehe pn532_get_response_timeout_ms() im Header fuer das Warum. ats zeigt
  * auf T0 (erstes Byte NACH dem TL-Laengenbyte), ats_len ist die Anzahl
  * verbleibender ATS-Bytes ab T0. */
+// Fuer Diagnose-Hexdumps -- cap bei 48 Byte, reicht fuer eine komplette
+// InListPassiveTarget-Antwort (NbTg..ATS) in der Praxis locker aus.
+#define PN532_HEXDUMP_CAP 48
+
+static void pn532_log_hex(const char *tag_suffix, const char *prefix, const uint8_t *data, size_t len)
+{
+    char hex[3 * PN532_HEXDUMP_CAP + 1] = {0};
+    size_t n = len < PN532_HEXDUMP_CAP ? len : PN532_HEXDUMP_CAP;
+    for (size_t i = 0; i < n; i++) {
+        snprintf(&hex[i * 3], 4, "%02X ", data[i]);
+    }
+    ESP_LOGI(TAG, "%s%s (%d Byte): %s", prefix, tag_suffix, (int)len, hex);
+}
+
 static void pn532_log_ats_hex(const char *prefix, const uint8_t *ats, size_t ats_len)
 {
-    char hex[3 * 32 + 1] = {0};  // genug fuer eine typische ATS, sonst wird abgeschnitten
-    size_t n = ats_len < 32 ? ats_len : 32;
-    for (size_t i = 0; i < n; i++) {
-        snprintf(&hex[i * 3], 4, "%02X ", ats[i]);
-    }
-    ESP_LOGI(TAG, "%s (%d Byte ab T0): %s", prefix, (int)ats_len, hex);
+    pn532_log_hex(" ab T0", prefix, ats, ats_len);
 }
 
 static void pn532_update_response_timeout_from_ats(const uint8_t *ats, size_t ats_len)
@@ -404,6 +413,14 @@ esp_err_t pn532_poll_once(pn532_card_t *out_card, uint32_t timeout_ms)
 
     // resp: NbTg(1) Tg(1) SensRes(2) SelRes(1) NFCIDLength(1) NFCID(...) [ATSLength ATS...]
     if (resp_len < 7) return ESP_ERR_NOT_FOUND;
+
+    // Diagnose: rohe InListPassiveTarget-Antwort komplett loggen, BEVOR
+    // irgendeine Annahme ueber Feld-Offsets angewendet wird -- die ATS-
+    // Berechnung hat widerspruechliche Werte geliefert (z.B. ATSLength=111
+    // bei resp_len=19, oder "keine ATS" bei einem Geraet, das nachweislich
+    // ISO-DEP spricht), das riecht nach einem falschen Offset, nicht nach
+    // fehlenden Daten. Siehe PROTOCOL.md/Session-Notizen.
+    pn532_log_hex("", "InListPassiveTarget RAW", resp, resp_len);
 
     uint8_t tg = resp[1];
     uint8_t uid_len = resp[6];
