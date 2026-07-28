@@ -416,6 +416,8 @@ static esp_err_t pn532_reactivate_target(void)
     return ESP_OK;
 }
 
+#define PN532_DATA_EXCHANGE_MAX_REACTIVATIONS 2
+
 esp_err_t pn532_data_exchange(const uint8_t *apdu, size_t apdu_len,
                                uint8_t *resp, size_t resp_cap, size_t *resp_len,
                                uint32_t timeout_ms)
@@ -423,21 +425,25 @@ esp_err_t pn532_data_exchange(const uint8_t *apdu, size_t apdu_len,
     if (!s_target_selected) return ESP_ERR_INVALID_STATE;
 
     esp_err_t err = pn532_data_exchange_once(apdu, apdu_len, resp, resp_cap, resp_len, timeout_ms);
-    if (err == ESP_OK) return ESP_OK;
 
-    // Einmaliger Erholungsversuch: die Karte kann noch im Feld sein, auch
-    // wenn ihre bisherige ISO14443-4-Sitzung nicht mehr antwortet (z.B. FWT
-    // ueberschritten). WICHTIG: nur sinnvoll, solange noch kein
+    // Erholungsversuche: die Karte kann noch im Feld sein, auch wenn ihre
+    // bisherige ISO14443-4-Sitzung nicht mehr antwortet (z.B. FWT
+    // ueberschritten). WICHTIG: nur unbedenklich, solange noch kein
     // kryptografischer Auth-Zustand auf der Karte existiert, den eine
     // Re-Aktivierung (RATS) zerstoeren wuerde -- fuer das jeweils ERSTE APDU
     // einer Session (SELECT/AUTH0) ist das der Fall, spaeter im Handshake
     // koennte ein stiller Session-Reset sonst zu verwirrenden Folgefehlern
-    // fuehren statt zu einem klaren Abbruch.
-    ESP_LOGW(TAG, "InDataExchange fehlgeschlagen (%s), versuche Re-Aktivierung...", esp_err_to_name(err));
-    if (pn532_reactivate_target() != ESP_OK) {
-        return err;
+    // fuehren statt zu einem klaren Abbruch (siehe PROTOCOL.md).
+    for (int attempt = 1; err != ESP_OK && attempt <= PN532_DATA_EXCHANGE_MAX_REACTIVATIONS; attempt++) {
+        ESP_LOGW(TAG, "InDataExchange fehlgeschlagen (%s), Re-Aktivierungsversuch %d/%d...",
+                 esp_err_to_name(err), attempt, PN532_DATA_EXCHANGE_MAX_REACTIVATIONS);
+        if (pn532_reactivate_target() != ESP_OK) {
+            ESP_LOGW(TAG, "Re-Aktivierung fehlgeschlagen -- Karte hat das Feld vermutlich verlassen");
+            break;
+        }
+        err = pn532_data_exchange_once(apdu, apdu_len, resp, resp_cap, resp_len, timeout_ms);
     }
-    return pn532_data_exchange_once(apdu, apdu_len, resp, resp_cap, resp_len, timeout_ms);
+    return err;
 }
 
 void pn532_release_field(void)
