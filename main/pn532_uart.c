@@ -466,16 +466,30 @@ static esp_err_t pn532_data_exchange_once(const uint8_t *apdu, size_t apdu_len,
     return ESP_OK;
 }
 
-/* Sucht die Karte per InListPassiveTarget erneut (ohne den ECP-Broadcast-
- * Fallback von pn532_poll_once()) und aktualisiert das Target fuer
- * InDataExchange. Genutzt, um nach einem RF-Kommunikationsfehler (z.B.
- * PN532-Status 0x01 "Timeout, target did not answer") eine noch
- * physisch im Feld befindliche Karte neu zu aktivieren -- deren ISO14443-4-
- * Sitzung kann abgelaufen sein (Frame Waiting Time ueberschritten, z.B. durch
- * die MQTT-Rundlaufzeit bis zum ersten APDU nach der Erkennung), ohne dass
- * die Karte das Feld verlassen hat. */
+/* Sucht die Karte per InListPassiveTarget erneut und aktualisiert das Target
+ * fuer InDataExchange. Genutzt, um nach einem RF-Kommunikationsfehler (z.B.
+ * PN532-Status 0x01 "Timeout, target did not answer") eine noch physisch im
+ * Feld befindliche Karte neu zu aktivieren -- deren ISO14443-4-Sitzung kann
+ * abgelaufen sein (Frame Waiting Time ueberschritten, z.B. durch die
+ * MQTT-Rundlaufzeit bis zum naechsten APDU), ohne dass die Karte das Feld
+ * verlassen hat.
+ *
+ * WICHTIG: sendet vorher den ECP/HomeKey-Broadcast (siehe
+ * pn532_send_homekey_broadcast()) -- ein blankes InListPassiveTarget (reines
+ * REQA/WUPA) reicht bei einem iPhone/einer Watch mit HomeKey NICHT aus, um es
+ * zur erneuten Antwort zu bewegen: Apples HCE-Implementierung reagiert nur
+ * auf den proprietaeren ECP-Praefix, nicht auf ein generisches Polling (siehe
+ * pn532_poll_once(), das genau deswegen zwischen Polling-Versuchen den
+ * Broadcast einstreut). Ohne dieses Broadcast-Priming schlug die
+ * Re-Aktivierung bei echten Handshakes mit einem gepairten iPhone-HomeKey
+ * ausnahmslos fehl ("Karte hat das Feld vermutlich verlassen"), obwohl das
+ * Telefon nachweislich noch aufgelegt war (siehe PROTOCOL.md). Fuer reine
+ * Passivkarten (DESFire etc.) ist der zusaetzliche Broadcast unschaedlich --
+ * sie ignorieren ihn einfach. */
 static esp_err_t pn532_reactivate_target(void)
 {
+    pn532_send_homekey_broadcast();
+
     uint8_t params[] = {0x01, 0x00};
     uint8_t resp[300];
     size_t resp_len = 0;
