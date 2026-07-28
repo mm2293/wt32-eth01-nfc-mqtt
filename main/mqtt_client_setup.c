@@ -158,7 +158,15 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
             ESP_LOGI(TAG, "MQTT verbunden, abonniere %s, %s und %s",
                      TOPIC_INCOMING_RESULT, TOPIC_INCOMING_APDU_CMD, TOPIC_INCOMING_HOMEKEY_GROUP_ID);
             esp_mqtt_client_subscribe(s_mqtt_client, TOPIC_INCOMING_RESULT, 1);
-            esp_mqtt_client_subscribe(s_mqtt_client, TOPIC_INCOMING_APDU_CMD, 1);
+            // QoS 0 bewusst: nfc/apdu_cmd wird pro Kartenvorgang mehrfach
+            // (einmal je APDU) durchgereicht, oft innerhalb eines engen
+            // Zeitfensters, das Karte/Handy fuer die laufende NFC-Transaktion
+            // offenhalten. QoS 1 wuerde auf JEDEM Hop (Broker<->Client) eine
+            // zusaetzliche PUBACK-Bestaetigung erzwingen -- Latenz, die hier
+            // nichts bringt, da ein verlorenes APDU ohnehin ueber das eigene
+            // Timeout auf Addon-Seite (mqtt_bridge.py) erkannt wird, nicht
+            // durch MQTT-Zustellgarantien.
+            esp_mqtt_client_subscribe(s_mqtt_client, TOPIC_INCOMING_APDU_CMD, 0);
             // Retained: liefert beim (Wieder-)Verbinden sofort den zuletzt vom
             // Addon veroeffentlichten Wert nach, auch nach einem ESP32-Reboot.
             esp_mqtt_client_subscribe(s_mqtt_client, TOPIC_INCOMING_HOMEKEY_GROUP_ID, 1);
@@ -269,7 +277,7 @@ void mqtt_client_setup_publish_apdu_response(uint32_t session_id, bool ok,
     }
 
     char *payload = cJSON_PrintUnformatted(json);
-    esp_mqtt_client_publish(s_mqtt_client, TOPIC_OUTGOING_APDU_RESP, payload, 0, 1, 0);
+    esp_mqtt_client_publish(s_mqtt_client, TOPIC_OUTGOING_APDU_RESP, payload, 0, 0, 0);  // QoS 0, siehe Kommentar bei der Subscription
     free(payload);
     cJSON_Delete(json);
 }
