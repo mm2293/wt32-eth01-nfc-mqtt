@@ -14,6 +14,7 @@
 #include <inttypes.h>
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -48,6 +49,14 @@ static void card_event_task(void *pvParameters)
         }
 
         uint32_t session_id = ++s_session_counter;
+        // Zeitbasis fuer die Latenz-Logs unten: misst, wie viel Zeit seit der
+        // Kartenerkennung (RATS bereits erfolgt) vergeht, bis das erste/jedes
+        // weitere APDU tatsaechlich per InDataExchange rausgeht -- HomeKey/
+        // DESFire-Sitzungen koennen bei zu langer Inaktivitaet nach RATS
+        // abbrechen (siehe pn532_uart.c:pn532_data_exchange() Kommentar), und
+        // bislang fehlte die Sichtbarkeit, WELCHER Anteil (MQTT-Rundlauf vs.
+        // Addon-Verarbeitung vs. RF-Austausch selbst) dafuer verantwortlich ist.
+        int64_t t_detect_us = esp_timer_get_time();
 
         char uid_str[32] = {0};
         for (int i = 0; i < card.uid_len; i++) {
@@ -63,19 +72,35 @@ static void card_event_task(void *pvParameters)
             // APDU-Relay-Schleife: auf weitere Kommandos vom Addon warten und
             // per InDataExchange an die noch selektierte Karte weiterreichen,
             // bis das Addon das Endergebnis meldet oder 3s nichts mehr kommt.
+            int apdu_index = 0;
             while (1) {
                 mqtt_apdu_cmd_t cmd;
                 bool session_ended = false;
+                int64_t t_wait_start_us = esp_timer_get_time();
                 if (!mqtt_client_setup_wait_apdu_cmd(session_id, &cmd, &session_ended, 3000)) {
                     if (!session_ended) {
                         ESP_LOGW(TAG, "Session %" PRIu32 ": Timeout, breche APDU-Relay ab", session_id);
                     }
                     break;
                 }
+                apdu_index++;
+                int64_t t_cmd_received_us = esp_timer_get_time();
+                ESP_LOGI(TAG, "Session %" PRIu32 ": APDU #%d empfangen (%lld ms seit Erkennung, "
+                              "%lld ms Wartezeit auf diese Nachricht)",
+                         session_id, apdu_index,
+                         (long long)((t_cmd_received_us - t_detect_us) / 1000),
+                         (long long)((t_cmd_received_us - t_wait_start_us) / 1000));
 
                 uint8_t resp[MQTT_APDU_MAX_LEN];
                 size_t resp_len = 0;
+                int64_t t_exchange_start_us = esp_timer_get_time();
                 esp_err_t err = pn532_data_exchange(cmd.apdu, cmd.apdu_len, resp, sizeof(resp), &resp_len, 500);
+                int64_t t_exchange_end_us = esp_timer_get_time();
+                ESP_LOGI(TAG, "Session %" PRIu32 ": InDataExchange #%d %s, dauerte %lld ms "
+                              "(%lld ms seit Erkennung)",
+                         session_id, apdu_index, err == ESP_OK ? "OK" : "FEHLGESCHLAGEN",
+                         (long long)((t_exchange_end_us - t_exchange_start_us) / 1000),
+                         (long long)((t_exchange_end_us - t_detect_us) / 1000));
                 if (err == ESP_OK) {
                     mqtt_client_setup_publish_apdu_response(session_id, true, resp, resp_len, NULL);
                 } else {
