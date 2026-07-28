@@ -53,6 +53,18 @@ esp_err_t pn532_data_exchange(const uint8_t *apdu, size_t apdu_len,
                                uint8_t *resp, size_t resp_cap, size_t *resp_len,
                                uint32_t timeout_ms);
 
+/* Wie pn532_data_exchange(), aber mit native=true fuer native MIFARE-
+ * Classic-Kommandos (Auth 0x60/0x61, Read 0x30, Write 0xA0 -- siehe
+ * mifare_classic_module.py) statt ISO7816-APDUs: das PN532-Statusbyte ist
+ * dort selbst die eigentliche Antwort der Karte (z.B. 0x14 bei falschem
+ * Authentifizierungs-Key -- normal, kein Fehler) und wird unveraendert als
+ * letztes Antwort-Byte durchgereicht statt als Fehler wie
+ * ESP_ERR_INVALID_RESPONSE behandelt zu werden. native=false entspricht
+ * genau pn532_data_exchange(). */
+esp_err_t pn532_data_exchange_ex(const uint8_t *apdu, size_t apdu_len,
+                                  uint8_t *resp, size_t resp_cap, size_t *resp_len,
+                                  uint32_t timeout_ms, bool native);
+
 /* Liefert das InDataExchange-Timeout (in ms), das fuer das zuletzt per
  * pn532_poll_once()/interner Re-Aktivierung gefundene Target passend ist --
  * berechnet aus dem FWI (Frame Waiting Integer) in dessen ATS, statt einen

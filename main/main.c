@@ -109,9 +109,18 @@ static void card_event_task(void *pvParameters)
             // berechnetes Timeout (siehe pn532_get_response_timeout_ms()) --
             // bei Karten ohne ATS (z.B. Mifare Classic) greift dessen
             // konservativer Default-Fallback.
+            //
+            // native=true fuer Mifare Classic (SAK 0x08/0x18, iso14443_4=
+            // false): dort ist das PN532-Statusbyte selbst die eigentliche
+            // Kartenantwort (z.B. 0x14 bei falschem Auth-Key -- normal, kein
+            // Fehler) und muss unveraendert durchgereicht werden, statt als
+            // Kommunikationsfehler behandelt zu werden (siehe
+            // pn532_uart.c:pn532_data_exchange_ex()). Ohne das schlug JEDER
+            // Mifare-Classic-Crypto1-Anlernversuch fehl, sobald die Karte
+            // nicht mehr auf dem Werksstandard-Key war.
             int64_t t_exchange_start_us = esp_timer_get_time();
-            esp_err_t err = pn532_data_exchange(cmd.apdu, cmd.apdu_len, resp, sizeof(resp), &resp_len,
-                                                 pn532_get_response_timeout_ms());
+            esp_err_t err = pn532_data_exchange_ex(cmd.apdu, cmd.apdu_len, resp, sizeof(resp), &resp_len,
+                                                    pn532_get_response_timeout_ms(), !card.iso14443_4);
             int64_t t_exchange_end_us = esp_timer_get_time();
             ESP_LOGI(TAG, "Session %" PRIu32 ": InDataExchange #%d %s, dauerte %lld ms "
                           "(%lld ms seit Erkennung)",

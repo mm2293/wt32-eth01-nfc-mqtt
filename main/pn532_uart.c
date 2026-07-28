@@ -627,15 +627,75 @@ static esp_err_t pn532_reactivate_target(void)
     return ESP_OK;
 }
 
+/* Wie pn532_data_exchange_fetch(), aber fuer native MIFARE-Classic-
+ * Kommandos (Auth 0x60/0x61, Read 0x30, Write 0xA0 -- siehe
+ * mifare_classic_module.py) statt ISO7816-APDUs: das PN532-Statusbyte IST
+ * hier die eigentliche, von der Karte gelieferte Antwort (z.B. 0x14
+ * "MIFARE-Authentifizierungsfehler" bei falschem Key) -- eine normale,
+ * gueltige Antwort und KEIN Kommunikationsfehler, anders als bei
+ * ISO7816-APDUs (dort lebt das logische Ergebnis in SW1/SW2 INNERHALB der
+ * Nutzdaten, und ein Statusbyte != 0 bedeutet tatsaechlich einen RF-/PN532-
+ * Fehler). Das Statusbyte wird deshalb unveraendert als letztes Byte an die
+ * Nutzdaten angehaengt durchgereicht (Konvention, siehe
+ * mifare_classic_module.py: "letztes Antwort-Byte = Status") statt als
+ * Fehler wie z.B. ESP_ERR_INVALID_RESPONSE gewertet zu werden. Nur ein
+ * echter Kommunikationsfehler (pn532_command() selbst schlaegt fehl, kein
+ * gueltiges Antwort-Frame) bleibt ein Fehler. Keine "more data"-Fortsetzung
+ * noetig -- native MIFARE-Kommandos passen immer in ein einzelnes
+ * Kurzframe (max. 16 Byte Nutzdaten bei ReadBlock). */
+static esp_err_t pn532_data_exchange_once_native(const uint8_t *cmd, size_t cmd_len,
+                                                  uint8_t *resp, size_t resp_cap, size_t *resp_len,
+                                                  uint32_t timeout_ms)
+{
+    uint8_t params[300];
+    if (cmd_len + 1 > sizeof(params)) return ESP_ERR_INVALID_SIZE;
+    params[0] = s_last_target_number;
+    memcpy(&params[1], cmd, cmd_len);
+
+    uint8_t raw_resp[300];
+    size_t raw_len = 0;
+    esp_err_t err = pn532_command(PN532_CMD_IN_DATA_EXCHANGE, params, cmd_len + 1,
+                                   raw_resp, sizeof(raw_resp), &raw_len, timeout_ms);
+    if (err != ESP_OK) return err;
+    if (raw_len < 1) return ESP_ERR_INVALID_RESPONSE;
+
+    uint8_t status = raw_resp[0] & 0x3F;
+    size_t data_len = raw_len - 1;
+    if (data_len + 1 > resp_cap) {
+        ESP_LOGW(TAG, "InDataExchange (nativ): Antwort (%d+1 Byte) passt nicht in den Puffer "
+                       "(%d Byte) -- breche ab statt still abzuschneiden",
+                 (int)data_len, (int)resp_cap);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    memcpy(resp, &raw_resp[1], data_len);
+    resp[data_len] = status;
+    *resp_len = data_len + 1;
+
+    if (status != 0x00) {
+        ESP_LOGI(TAG, "InDataExchange (nativ): Statusbyte 0x%02X (kein Fehler -- wird "
+                       "unveraendert an das Addon durchgereicht)", status);
+    }
+    return ESP_OK;
+}
+
 #define PN532_DATA_EXCHANGE_MAX_REACTIVATIONS 2
 
 esp_err_t pn532_data_exchange(const uint8_t *apdu, size_t apdu_len,
                                uint8_t *resp, size_t resp_cap, size_t *resp_len,
                                uint32_t timeout_ms)
 {
+    return pn532_data_exchange_ex(apdu, apdu_len, resp, resp_cap, resp_len, timeout_ms, false);
+}
+
+esp_err_t pn532_data_exchange_ex(const uint8_t *apdu, size_t apdu_len,
+                                  uint8_t *resp, size_t resp_cap, size_t *resp_len,
+                                  uint32_t timeout_ms, bool native)
+{
     if (!s_target_selected) return ESP_ERR_INVALID_STATE;
 
-    esp_err_t err = pn532_data_exchange_once(apdu, apdu_len, resp, resp_cap, resp_len, timeout_ms);
+    esp_err_t err = native
+        ? pn532_data_exchange_once_native(apdu, apdu_len, resp, resp_cap, resp_len, timeout_ms)
+        : pn532_data_exchange_once(apdu, apdu_len, resp, resp_cap, resp_len, timeout_ms);
 
     // Erholungsversuche: die Karte kann noch im Feld sein, auch wenn ihre
     // bisherige ISO14443-4-Sitzung nicht mehr antwortet (z.B. FWT
@@ -644,7 +704,9 @@ esp_err_t pn532_data_exchange(const uint8_t *apdu, size_t apdu_len,
     // Re-Aktivierung (RATS) zerstoeren wuerde -- fuer das jeweils ERSTE APDU
     // einer Session (SELECT/AUTH0) ist das der Fall, spaeter im Handshake
     // koennte ein stiller Session-Reset sonst zu verwirrenden Folgefehlern
-    // fuehren statt zu einem klaren Abbruch (siehe PROTOCOL.md).
+    // fuehren statt zu einem klaren Abbruch (siehe PROTOCOL.md). Fuer den
+    // nativen Pfad greift das nur noch bei ECHTEN Kommunikationsfehlern,
+    // nicht mehr bei einem normalen MIFARE-Statusbyte wie 0x14.
     for (int attempt = 1; err != ESP_OK && attempt <= PN532_DATA_EXCHANGE_MAX_REACTIVATIONS; attempt++) {
         ESP_LOGW(TAG, "InDataExchange fehlgeschlagen (%s), Re-Aktivierungsversuch %d/%d...",
                  esp_err_to_name(err), attempt, PN532_DATA_EXCHANGE_MAX_REACTIVATIONS);
@@ -652,7 +714,9 @@ esp_err_t pn532_data_exchange(const uint8_t *apdu, size_t apdu_len,
             ESP_LOGW(TAG, "Re-Aktivierung fehlgeschlagen -- Karte hat das Feld vermutlich verlassen");
             break;
         }
-        err = pn532_data_exchange_once(apdu, apdu_len, resp, resp_cap, resp_len, timeout_ms);
+        err = native
+            ? pn532_data_exchange_once_native(apdu, apdu_len, resp, resp_cap, resp_len, timeout_ms)
+            : pn532_data_exchange_once(apdu, apdu_len, resp, resp_cap, resp_len, timeout_ms);
     }
     return err;
 }
