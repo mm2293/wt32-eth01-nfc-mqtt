@@ -94,6 +94,22 @@ reicht das. Der HomeKey-ATTESTATION-Flow (grosse CBOR/mdoc-Envelopes beim
 allerersten Pairing eines neuen Geraets ohne bekannten Issuer) kann das
 ueberschreiten und ist damit noch nicht abgedeckt.
 
+Erste Real-Hardware-Tests zeigten, dass die Karte zwischen Erkennung und dem
+ersten APDU (die Zeit fuer den MQTT/Worker-Thread-Rundlauf zum Addon und
+zurueck, in der Praxis ~700ms) ihre ISO14443-4-Sitzung verlieren kann (PN532
+InDataExchange-Status 0x01 "Timeout, target did not answer") -- vermutlich
+weil die vom Kartentyp im ATS ausgehandelte Frame Waiting Time ueberschritten
+wird, obwohl die Karte physisch im Feld bleibt. `pn532_data_exchange()`
+versucht deshalb bei einem Fehler einmalig eine Re-Aktivierung (erneutes
+`InListPassiveTarget`) und wiederholt das APDU danach genau einmal. Das ist
+fuer das JEWEILS ERSTE APDU einer Session unbedenklich (kein Auth-Zustand auf
+der Karte, der durch die Re-Aktivierung verloren gehen koennte). Tritt
+derselbe Fehler spaeter im Auth-Handshake auf, setzt die Re-Aktivierung die
+Karte ebenfalls zurueck -- das faellt aber nicht still unter den Tisch,
+sondern die Reader-Seite (homekey_lib/DESFireSession) erkennt die daraufhin
+nicht mehr passende Kryptoantwort der Karte zuverlaessig als Auth-Fehler statt
+sie faelschlich zu akzeptieren.
+
 ## Offene Folgeschritte
 
 - Mifare Classic/Crypto1-Unterstuetzung (addon-seitig, `mifare_classic_module.py`)

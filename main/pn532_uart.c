@@ -362,12 +362,10 @@ esp_err_t pn532_poll_once(pn532_card_t *out_card, uint32_t timeout_ms)
     return ESP_OK;
 }
 
-esp_err_t pn532_data_exchange(const uint8_t *apdu, size_t apdu_len,
-                               uint8_t *resp, size_t resp_cap, size_t *resp_len,
-                               uint32_t timeout_ms)
+static esp_err_t pn532_data_exchange_once(const uint8_t *apdu, size_t apdu_len,
+                                           uint8_t *resp, size_t resp_cap, size_t *resp_len,
+                                           uint32_t timeout_ms)
 {
-    if (!s_target_selected) return ESP_ERR_INVALID_STATE;
-
     uint8_t params[300];
     if (apdu_len + 1 > sizeof(params)) return ESP_ERR_INVALID_SIZE;
     params[0] = s_last_target_number;
@@ -391,6 +389,55 @@ esp_err_t pn532_data_exchange(const uint8_t *apdu, size_t apdu_len,
     memcpy(resp, &raw_resp[1], data_len);
     *resp_len = data_len;
     return ESP_OK;
+}
+
+/* Sucht die Karte per InListPassiveTarget erneut (ohne den ECP-Broadcast-
+ * Fallback von pn532_poll_once()) und aktualisiert das Target fuer
+ * InDataExchange. Genutzt, um nach einem RF-Kommunikationsfehler (z.B.
+ * PN532-Status 0x01 "Timeout, target did not answer") eine noch
+ * physisch im Feld befindliche Karte neu zu aktivieren -- deren ISO14443-4-
+ * Sitzung kann abgelaufen sein (Frame Waiting Time ueberschritten, z.B. durch
+ * die MQTT-Rundlaufzeit bis zum ersten APDU nach der Erkennung), ohne dass
+ * die Karte das Feld verlassen hat. */
+static esp_err_t pn532_reactivate_target(void)
+{
+    uint8_t params[] = {0x01, 0x00};
+    uint8_t resp[300];
+    size_t resp_len = 0;
+
+    esp_err_t err = pn532_command(PN532_CMD_IN_LIST_PASSIVE_TARGET, params, sizeof(params),
+                                   resp, sizeof(resp), &resp_len, 300);
+    if (err != ESP_OK || resp_len < 7 || resp[0] == 0) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    s_last_target_number = resp[1];
+    s_target_selected = true;
+    return ESP_OK;
+}
+
+esp_err_t pn532_data_exchange(const uint8_t *apdu, size_t apdu_len,
+                               uint8_t *resp, size_t resp_cap, size_t *resp_len,
+                               uint32_t timeout_ms)
+{
+    if (!s_target_selected) return ESP_ERR_INVALID_STATE;
+
+    esp_err_t err = pn532_data_exchange_once(apdu, apdu_len, resp, resp_cap, resp_len, timeout_ms);
+    if (err == ESP_OK) return ESP_OK;
+
+    // Einmaliger Erholungsversuch: die Karte kann noch im Feld sein, auch
+    // wenn ihre bisherige ISO14443-4-Sitzung nicht mehr antwortet (z.B. FWT
+    // ueberschritten). WICHTIG: nur sinnvoll, solange noch kein
+    // kryptografischer Auth-Zustand auf der Karte existiert, den eine
+    // Re-Aktivierung (RATS) zerstoeren wuerde -- fuer das jeweils ERSTE APDU
+    // einer Session (SELECT/AUTH0) ist das der Fall, spaeter im Handshake
+    // koennte ein stiller Session-Reset sonst zu verwirrenden Folgefehlern
+    // fuehren statt zu einem klaren Abbruch.
+    ESP_LOGW(TAG, "InDataExchange fehlgeschlagen (%s), versuche Re-Aktivierung...", esp_err_to_name(err));
+    if (pn532_reactivate_target() != ESP_OK) {
+        return err;
+    }
+    return pn532_data_exchange_once(apdu, apdu_len, resp, resp_cap, resp_len, timeout_ms);
 }
 
 void pn532_release_field(void)
