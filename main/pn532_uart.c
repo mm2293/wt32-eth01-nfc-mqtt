@@ -60,6 +60,55 @@ static uint8_t s_homekey_group_identifier[8] = {0};
 static uint8_t s_last_target_number = 0;
 static bool s_target_selected = false;
 
+// Sicherheitsmarge fuer ein paar ISO14443-4-WTX-Verlaengerungen obendrauf auf
+// das reine FWT -- der PN532 bedient WTX-Anfragen der Karte chip-intern
+// transparent, aber nur innerhalb des Timeouts, das wir ihm hier mitgeben.
+#define PN532_RESPONSE_TIMEOUT_WTX_MARGIN_FACTOR 4
+#define PN532_RESPONSE_TIMEOUT_MIN_MS   200
+#define PN532_RESPONSE_TIMEOUT_MAX_MS   5000
+// Fallback, falls eine Karte kein TB(1) (und damit kein FWI) in ihrer ATS
+// mitliefert -- ISO14443-4 erlaubt das (Default FWI=4, ~4.8ms), das ist uns
+// aber zu knapp, deshalb hier grosszuegiger.
+#define PN532_RESPONSE_TIMEOUT_DEFAULT_MS 1000
+
+static uint32_t s_response_timeout_ms = PN532_RESPONSE_TIMEOUT_DEFAULT_MS;
+
+/* Berechnet und merkt sich das InDataExchange-Timeout aus dem FWI-Nibble in
+ * TB(1) der ATS (Nachbau von nfcpy tt4.py: fwt = 4096/13.56MHz * 2^FWI) --
+ * siehe pn532_get_response_timeout_ms() im Header fuer das Warum. ats zeigt
+ * auf T0 (erstes Byte NACH dem TL-Laengenbyte), ats_len ist die Anzahl
+ * verbleibender ATS-Bytes ab T0. */
+static void pn532_update_response_timeout_from_ats(const uint8_t *ats, size_t ats_len)
+{
+    s_response_timeout_ms = PN532_RESPONSE_TIMEOUT_DEFAULT_MS;
+    if (ats_len < 1) {
+        return;
+    }
+
+    uint8_t t0 = ats[0];
+    size_t idx = 1;
+    if (t0 & 0x10) idx++;  // TA(1) vorhanden -> ueberspringen
+    if (!(t0 & 0x20) || idx >= ats_len) {
+        return;  // kein TB(1) -> kein FWI bekannt, Default behalten
+    }
+
+    uint8_t fwi = (ats[idx] >> 4) & 0x0F;
+    double fwt_ms = (4096.0 / 13560000.0) * (double)(1u << fwi) * 1000.0;
+    double timeout_ms = fwt_ms * PN532_RESPONSE_TIMEOUT_WTX_MARGIN_FACTOR;
+
+    if (timeout_ms < PN532_RESPONSE_TIMEOUT_MIN_MS) timeout_ms = PN532_RESPONSE_TIMEOUT_MIN_MS;
+    if (timeout_ms > PN532_RESPONSE_TIMEOUT_MAX_MS) timeout_ms = PN532_RESPONSE_TIMEOUT_MAX_MS;
+
+    s_response_timeout_ms = (uint32_t)timeout_ms;
+    ESP_LOGI(TAG, "ATS: FWI=%u -> InDataExchange-Timeout = %u ms", (unsigned)fwi,
+             (unsigned)s_response_timeout_ms);
+}
+
+uint32_t pn532_get_response_timeout_ms(void)
+{
+    return s_response_timeout_ms;
+}
+
 void pn532_set_homekey_group_identifier(const uint8_t identifier[8])
 {
     memcpy(s_homekey_group_identifier, identifier, sizeof(s_homekey_group_identifier));
@@ -359,6 +408,19 @@ esp_err_t pn532_poll_once(pn532_card_t *out_card, uint32_t timeout_ms)
     s_last_target_number = tg;
     s_target_selected = true;
 
+    // ATS (falls vorhanden, [ATSLength ATS...] direkt nach der NFCID) auswerten,
+    // um das InDataExchange-Timeout auf diese Karte/dieses Geraet abzustimmen
+    // (siehe pn532_update_response_timeout_from_ats()). TL-Laengenbyte zaehlt
+    // sich selbst mit, ats_len = TL - 1.
+    s_response_timeout_ms = PN532_RESPONSE_TIMEOUT_DEFAULT_MS;
+    size_t ats_tl_index = (size_t)7 + uid_len;
+    if (out_card->iso14443_4 && ats_tl_index < resp_len) {
+        uint8_t ats_tl = resp[ats_tl_index];
+        if (ats_tl >= 1 && ats_tl_index + ats_tl <= resp_len) {
+            pn532_update_response_timeout_from_ats(&resp[ats_tl_index + 1], ats_tl - 1);
+        }
+    }
+
     return ESP_OK;
 }
 
@@ -502,6 +564,20 @@ static esp_err_t pn532_reactivate_target(void)
 
     s_last_target_number = resp[1];
     s_target_selected = true;
+
+    // ATS neu auswerten (wie in pn532_poll_once()) -- dieselbe Karte kann bei
+    // der Re-Aktivierung ein anderes Timing melden, und ohne das wuerde ein
+    // Default-Timeout stehenbleiben, statt das tatsaechlich per FWI
+    // gemeldete zu verwenden.
+    uint8_t uid_len = resp[6];
+    size_t ats_tl_index = (size_t)7 + uid_len;
+    if (ats_tl_index < resp_len) {
+        uint8_t ats_tl = resp[ats_tl_index];
+        if (ats_tl >= 1 && ats_tl_index + ats_tl <= resp_len) {
+            pn532_update_response_timeout_from_ats(&resp[ats_tl_index + 1], ats_tl - 1);
+        }
+    }
+
     return ESP_OK;
 }
 
