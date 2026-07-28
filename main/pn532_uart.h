@@ -53,6 +53,18 @@ esp_err_t pn532_data_exchange(const uint8_t *apdu, size_t apdu_len,
                                uint8_t *resp, size_t resp_cap, size_t *resp_len,
                                uint32_t timeout_ms);
 
+/* Liefert das InDataExchange-Timeout (in ms), das fuer das zuletzt per
+ * pn532_poll_once()/interner Re-Aktivierung gefundene Target passend ist --
+ * berechnet aus dem FWI (Frame Waiting Integer) in dessen ATS, statt einen
+ * festen Wert zu raten (so macht es z.B. nfcpy in tt4.py: timeout = fwt +
+ * delta_fwt, mit fwt = 4096/13.56MHz * 2^FWI). Enthaelt eine Sicherheitsmarge
+ * fuer ein paar ISO14443-4-WTX-Verlaengerungen, die der PN532 chip-intern
+ * bereits transparent bedient, sofern das hier gewaehlte Gesamt-Timeout
+ * dafuer reicht. Ohne ATS/TB(1) (z.B. Karte ohne Timing-Angabe) wird ein
+ * konservativer Default zurueckgegeben. An main.c uebergeben statt dort einen
+ * fixen Wert zu verdrahten. */
+uint32_t pn532_get_response_timeout_ms(void);
+
 /* Deaktiviert das RF-Feld (z.B. nach Sessionende/-abbruch), damit der
  * naechste pn532_poll_once() sauber neu beginnt. */
 void pn532_release_field(void);

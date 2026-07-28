@@ -93,16 +93,15 @@ static void card_event_task(void *pvParameters)
 
                 uint8_t resp[MQTT_APDU_MAX_LEN];
                 size_t resp_len = 0;
-                // 2500ms statt vormals 500ms: das HomeKey-Attestation-SELECT
-                // (AID A0000008580102, direkt nach OP_CONTROL_FLOW(0x40,0xA0))
-                // scheitert bei einem echten, frisch gepairten iPhone bislang
-                // ausnahmslos an dieser Stelle -- Verdacht ist, dass das
-                // Telefon fuer die Attestation-Paket-Vorbereitung eine
-                // ISO14443-4-WTX-Verlaengerung braucht, die der PN532 zwar
-                // transparent handhabt, aber nur innerhalb des hier
-                // uebergebenen Gesamt-Timeouts (siehe PROTOCOL.md).
+                // Statt eines fest verdrahteten Werts: aus dem FWI in der ATS
+                // der aktuellen Karte/des Geraets berechnetes Timeout (siehe
+                // pn532_get_response_timeout_ms()) -- ein iPhone meldet hier
+                // typischerweise deutlich mehr Zeit als der ISO14443-4-Default,
+                // die es fuer manche Antworten (z.B. HomeKey-Attestation) auch
+                // tatsaechlich braucht.
                 int64_t t_exchange_start_us = esp_timer_get_time();
-                esp_err_t err = pn532_data_exchange(cmd.apdu, cmd.apdu_len, resp, sizeof(resp), &resp_len, 2500);
+                esp_err_t err = pn532_data_exchange(cmd.apdu, cmd.apdu_len, resp, sizeof(resp), &resp_len,
+                                                     pn532_get_response_timeout_ms());
                 int64_t t_exchange_end_us = esp_timer_get_time();
                 ESP_LOGI(TAG, "Session %" PRIu32 ": InDataExchange #%d %s, dauerte %lld ms "
                               "(%lld ms seit Erkennung)",
