@@ -78,10 +78,23 @@ static uint32_t s_response_timeout_ms = PN532_RESPONSE_TIMEOUT_DEFAULT_MS;
  * siehe pn532_get_response_timeout_ms() im Header fuer das Warum. ats zeigt
  * auf T0 (erstes Byte NACH dem TL-Laengenbyte), ats_len ist die Anzahl
  * verbleibender ATS-Bytes ab T0. */
+static void pn532_log_ats_hex(const char *prefix, const uint8_t *ats, size_t ats_len)
+{
+    char hex[3 * 32 + 1] = {0};  // genug fuer eine typische ATS, sonst wird abgeschnitten
+    size_t n = ats_len < 32 ? ats_len : 32;
+    for (size_t i = 0; i < n; i++) {
+        snprintf(&hex[i * 3], 4, "%02X ", ats[i]);
+    }
+    ESP_LOGI(TAG, "%s (%d Byte ab T0): %s", prefix, (int)ats_len, hex);
+}
+
 static void pn532_update_response_timeout_from_ats(const uint8_t *ats, size_t ats_len)
 {
     s_response_timeout_ms = PN532_RESPONSE_TIMEOUT_DEFAULT_MS;
+    pn532_log_ats_hex("ATS", ats, ats_len);
+
     if (ats_len < 1) {
+        ESP_LOGI(TAG, "ATS leer -> Default-Timeout %u ms", (unsigned)s_response_timeout_ms);
         return;
     }
 
@@ -89,7 +102,9 @@ static void pn532_update_response_timeout_from_ats(const uint8_t *ats, size_t at
     size_t idx = 1;
     if (t0 & 0x10) idx++;  // TA(1) vorhanden -> ueberspringen
     if (!(t0 & 0x20) || idx >= ats_len) {
-        return;  // kein TB(1) -> kein FWI bekannt, Default behalten
+        ESP_LOGI(TAG, "ATS ohne TB(1)/FWI (T0=0x%02X) -> Default-Timeout %u ms", t0,
+                 (unsigned)s_response_timeout_ms);
+        return;
     }
 
     uint8_t fwi = (ats[idx] >> 4) & 0x0F;
@@ -418,7 +433,13 @@ esp_err_t pn532_poll_once(pn532_card_t *out_card, uint32_t timeout_ms)
         uint8_t ats_tl = resp[ats_tl_index];
         if (ats_tl >= 1 && ats_tl_index + ats_tl <= resp_len) {
             pn532_update_response_timeout_from_ats(&resp[ats_tl_index + 1], ats_tl - 1);
+        } else {
+            ESP_LOGI(TAG, "ATSLength=%u unplausibel (resp_len=%d) -> Default-Timeout %u ms",
+                     (unsigned)ats_tl, (int)resp_len, (unsigned)s_response_timeout_ms);
         }
+    } else if (out_card->iso14443_4) {
+        ESP_LOGI(TAG, "Keine ATS in der InListPassiveTarget-Antwort -> Default-Timeout %u ms",
+                 (unsigned)s_response_timeout_ms);
     }
 
     return ESP_OK;
