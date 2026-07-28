@@ -8,6 +8,14 @@
  *   nfc/result     (Addon -> ESP32)  bestehendes Format, beendet zusaetzlich
  *                                    die APDU-Relay-Session (siehe
  *                                    mqtt_client_setup_wait_apdu_cmd)
+ *   nfc/homekey_group_id (Addon -> ESP32, retained) 8-Byte reader_group_identifier
+ *                                    als Hex-String, siehe ha-nfc-addon/
+ *                                    main.py:_on_homekey_reader_key_changed().
+ *                                    Wird direkt an pn532_set_homekey_group_identifier()
+ *                                    weitergereicht (siehe pn532_uart.c fuer den
+ *                                    ECP-Broadcast, der diese ID enthaelt). Solange
+ *                                    das Addon noch nicht per HAP gepairt ist, kommt
+ *                                    hier nichts an und es bleibt beim Default 00...00.
  */
 
 #include "mqtt_client_setup.h"
@@ -23,13 +31,15 @@
 #include "freertos/queue.h"
 
 #include "relay_control.h"
+#include "pn532_uart.h"
 
 static const char *TAG = "mqtt_client_setup";
 
-#define TOPIC_INCOMING_RESULT   "nfc/result"
-#define TOPIC_OUTGOING_RAW      "nfc/raw"
-#define TOPIC_INCOMING_APDU_CMD "nfc/apdu_cmd"
-#define TOPIC_OUTGOING_APDU_RESP "nfc/apdu_resp"
+#define TOPIC_INCOMING_RESULT     "nfc/result"
+#define TOPIC_OUTGOING_RAW        "nfc/raw"
+#define TOPIC_INCOMING_APDU_CMD   "nfc/apdu_cmd"
+#define TOPIC_OUTGOING_APDU_RESP  "nfc/apdu_resp"
+#define TOPIC_INCOMING_HOMEKEY_GROUP_ID "nfc/homekey_group_id"
 
 static esp_mqtt_client_handle_t s_mqtt_client = NULL;
 static QueueHandle_t s_session_queue = NULL;
@@ -98,6 +108,18 @@ static void handle_apdu_cmd_message(const char *payload)
     }
 }
 
+static void handle_homekey_group_id_message(const char *payload)
+{
+    uint8_t identifier[8];
+    size_t len = hex_decode(payload, identifier, sizeof(identifier));
+    if (len != sizeof(identifier)) {
+        ESP_LOGW(TAG, "homekey_group_id mit ungueltiger Laenge ignoriert: %s", payload);
+        return;
+    }
+    pn532_set_homekey_group_identifier(identifier);
+    ESP_LOGI(TAG, "HomeKey reader_group_identifier aktualisiert: %s", payload);
+}
+
 static void handle_result_message(const char *payload)
 {
     cJSON *json = cJSON_Parse(payload);
@@ -133,9 +155,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
 
     switch ((esp_mqtt_event_id_t)event_id) {
         case MQTT_EVENT_CONNECTED:
-            ESP_LOGI(TAG, "MQTT verbunden, abonniere %s und %s", TOPIC_INCOMING_RESULT, TOPIC_INCOMING_APDU_CMD);
+            ESP_LOGI(TAG, "MQTT verbunden, abonniere %s, %s und %s",
+                     TOPIC_INCOMING_RESULT, TOPIC_INCOMING_APDU_CMD, TOPIC_INCOMING_HOMEKEY_GROUP_ID);
             esp_mqtt_client_subscribe(s_mqtt_client, TOPIC_INCOMING_RESULT, 1);
             esp_mqtt_client_subscribe(s_mqtt_client, TOPIC_INCOMING_APDU_CMD, 1);
+            // Retained: liefert beim (Wieder-)Verbinden sofort den zuletzt vom
+            // Addon veroeffentlichten Wert nach, auch nach einem ESP32-Reboot.
+            esp_mqtt_client_subscribe(s_mqtt_client, TOPIC_INCOMING_HOMEKEY_GROUP_ID, 1);
             break;
 
         case MQTT_EVENT_DISCONNECTED:
@@ -156,6 +182,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
                 handle_result_message(payload);
             } else if (strcmp(topic, TOPIC_INCOMING_APDU_CMD) == 0) {
                 handle_apdu_cmd_message(payload);
+            } else if (strcmp(topic, TOPIC_INCOMING_HOMEKEY_GROUP_ID) == 0) {
+                handle_homekey_group_id_message(payload);
             }
             break;
         }

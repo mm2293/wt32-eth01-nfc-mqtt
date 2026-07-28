@@ -1,9 +1,8 @@
 # MQTT-Protokoll WT32-ETH01 <-> nfc_access_control-Addon
 
-Gegenstueck im Addon: `nfc_access_control/app/mqtt_bridge.py` (dort ist der
-APDU-Teil noch NICHT angebunden -- `pn532_transceive` wirft aktuell noch
-`NotImplementedError`, siehe `_process_card()`. Das ist der naechste
-Arbeitsschritt.)
+Gegenstueck im Addon: `nfc_access_control/app/mqtt_bridge.py` (APDU-Relay
+angebunden) und `.../hap_accessory.py` + `.../modules/homekey_service.py`
+(HAP-Pairing, siehe ha-nfc-addon-Repo).
 
 ## Topics
 
@@ -60,6 +59,24 @@ oder bei Fehler:
 ISO7816-Reader normalerweise liefert), analog zu
 `homekey_lib/util/iso7816.py:ISO7816Response.unpack()`.
 
+### `nfc/homekey_group_id` (Addon -> ESP32, retained)
+
+```
+6a02cb0206021100...  (16 Hex-Zeichen = 8 Byte, KEIN JSON -- reiner Hex-String als Payload)
+```
+
+Die 8-Byte `reader_group_identifier`, die der ECP-Broadcast-Frame (siehe
+`pn532_uart.c:pn532_send_homekey_broadcast()`) an wartende iPhones/Watches
+sendet. Wird vom Addon retained veroeffentlicht, sobald sich der HomeKey-
+Reader-Key aendert (siehe `ha-nfc-addon/nfc_access_control/app/main.py:
+_on_homekey_reader_key_changed()`), damit ein iPhone mit bereits
+eingerichtetem Home Key den Reader ueberhaupt als Teil seiner "Haushalts"-
+Gruppe erkennt. Ungueltige/zu kurze Payloads werden ignoriert (Log-Warnung),
+der zuletzt gueltige Wert bleibt bestehen. Vor dem allerersten HAP-Pairing
+kommt hier nichts an -- die Firmware sendet dann weiterhin `00...00` als
+Identifier (siehe `pn532_uart.c`), der Broadcast wird trotzdem gesendet, nur
+erkennt kein Geraet den Reader als "seinen".
+
 ### `nfc/result` (Addon -> ESP32, bereits vorhanden)
 
 Unveraendertes Format. Wird zusaetzlich als **Sessionende** interpretiert:
@@ -79,11 +96,8 @@ ueberschreiten und ist damit noch nicht abgedeckt.
 
 ## Offene Folgeschritte
 
-1. Addon-seitig `mqtt_bridge.py`/`router.py` so erweitern, dass
-   `pn532_transceive` tatsaechlich `nfc/apdu_cmd` published und synchron auf
-   die passende `nfc/apdu_resp` wartet (Request/Response-Korrelation ueber
-   `session_id`).
-2. HAP-Accessory-Server im Addon (siehe `ha-nfc-addon`-Repo,
-   `homekey_lib/NOTICE.md`), damit `HOMEKEY_GROUP_IDENTIFIER` in `main.c`
-   nicht mehr hart auf `00...00` steht, sondern vom Addon nach erfolgreichem
-   Pairing gesetzt werden kann (z.B. ueber ein retained Config-Topic).
+- Mifare Classic/Crypto1-Unterstuetzung (addon-seitig, `mifare_classic_module.py`)
+  ist noch nicht implementiert.
+- Kein Test mit echter Hardware (WT32-ETH01 + PN532 + echter MQTT-Broker +
+  echtem iPhone/Watch) -- alles bisher nur gegen simulierte/mock APDU-
+  Antworten verifiziert.

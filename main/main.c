@@ -28,10 +28,12 @@ static const char *TAG = "main";
 #define MQTT_USERNAME    "mqtt"
 #define MQTT_PASSWORD    "mqtt-2025!"
 
-// Solange das Addon noch nicht per HAP mit der Home-App gepairt ist (siehe
-// Schritt 2), bleibt dies 0 -- der ECP-Broadcast wird trotzdem gesendet,
-// nur antwortet dann kein Geraet mit einem gueltigen Kryptogramm darauf.
-static const uint8_t HOMEKEY_GROUP_IDENTIFIER[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+// Die HomeKey reader_group_identifier kommt jetzt zur Laufzeit vom Addon
+// (retained MQTT-Topic nfc/homekey_group_id, siehe mqtt_client_setup.c),
+// sobald es per HAP mit der Home-App gepairt wurde. Bis dahin bleibt sie
+// beim Default 00...00 (siehe pn532_uart.c) -- der ECP-Broadcast wird
+// trotzdem gesendet, nur antwortet dann kein Geraet mit einem gueltigen
+// Kryptogramm darauf.
 
 static void card_event_task(void *pvParameters)
 {
@@ -100,8 +102,6 @@ static void pn532_init_task(void *pvParameters)
 
     // 1. UART-Treiber initialisieren
     pn532_uart_init();
-
-    pn532_set_homekey_group_identifier(HOMEKEY_GROUP_IDENTIFIER);
 
     // 2. SAM-Konfiguration durchführen
     ESP_LOGI(TAG, "Konfiguriere PN532 SAM...");
