@@ -100,13 +100,25 @@ InDataExchange-Antwort Bit 0x40 ("more data folgt"), das
 maskiert hat (`status = raw_resp[0] & 0x3F`) -- dadurch kam beim Addon ein
 unbemerkt abgeschnittenes CBOR-Paket an, das dort erst viel spaeter beim
 Parsen mit einem verwirrenden "index out of bounds"-Fehler abgestuerzt ist,
-statt dass der eigentliche Grund (Antwort zu lang) sichtbar wurde.
-`pn532_data_exchange_once()` bricht bei gesetztem 0x40-Bit jetzt sauber mit
-`ESP_ERR_NOT_SUPPORTED` ab (ebenso, wenn eine Antwort nicht in den
-Empfangspuffer passt) -- das macht die Einschraenkung nur sichtbar, hebt sie
-aber noch nicht auf. Echte Unterstuetzung braeuchte zusaetzliche
-InDataExchange-Aufrufe zum Abholen der Fortsetzung, das ist noch nicht
-implementiert.
+statt dass der eigentliche Grund (Antwort zu lang) sichtbar wurde. Als
+Zwischenschritt brach `pn532_data_exchange_once()` bei gesetztem 0x40-Bit
+kurzzeitig sauber mit `ESP_ERR_NOT_SUPPORTED` ab, statt still abzuschneiden.
+
+Mittlerweile ist die Fortsetzungslogik implementiert: sobald Bit 0x40
+gesetzt ist, fragt `pn532_data_exchange_once()` das naechste Antwortstueck
+per weiterem InDataExchange (Parameter nur Zielnummer-Byte, keine neuen
+APDU-Daten) ab und haengt es an den Antwortpuffer an, bis das Bit nicht mehr
+gesetzt ist. `MQTT_APDU_MAX_LEN` wurde dafuer von 250 auf 2048 Byte erhoeht
+(inkl. entsprechend vergroesserter MQTT-Puffer, Task-Stacks und Umstellung
+der betroffenen grossen Puffer in `mqtt_client_setup.c` von Stack- auf
+Heap-Allokation).
+
+**Wichtig:** Das genaue Fortsetzungs-Wireformat (Anfrage nur mit
+Zielnummer-Byte) ist aus einem gaengigen/plausiblen PN532-Verwendungsmuster
+abgeleitet, nicht gegen das NXP-Datenblatt verifiziert. Muss auf echter
+Hardware (insbesondere beim HomeKey-ATTESTATION-Flow) bestaetigt werden --
+die Firmware loggt dabei `"InDataExchange: hole Fortsetzung ab..."` je
+abgeholtem Stueck, das sollte im seriellen Log sichtbar sein.
 
 Erste Real-Hardware-Tests zeigten, dass die Karte zwischen Erkennung und dem
 ersten APDU (die Zeit fuer den MQTT/Worker-Thread-Rundlauf zum Addon und

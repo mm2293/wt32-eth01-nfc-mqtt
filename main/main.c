@@ -113,7 +113,11 @@ static void pn532_init_task(void *pvParameters)
     ESP_LOGI(TAG, "PN532 erfolgreich initialisiert!");
 
     // 3. Event-Task starten
-    xTaskCreate(card_event_task, "card_event", 6144, NULL, 5, NULL);
+    // 6144 reichte fuer die alte MQTT_APDU_MAX_LEN=250; seit 2048 (fuer
+    // InDataExchange-Fortsetzungen/HomeKey-ATTESTATION) liegen allein
+    // mqtt_apdu_cmd_t cmd (~2064 Byte) und resp[MQTT_APDU_MAX_LEN] (2048 Byte)
+    // gleichzeitig auf dem Stack dieser Task -- entsprechend vergroessert.
+    xTaskCreate(card_event_task, "card_event", 12288, NULL, 5, NULL);
 
     // Init-Task beenden
     vTaskDelete(NULL);
