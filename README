@@ -1,1 +1,4 @@
-1
+cd esp/esp-idf/wt32_firmware/
+idf.py build
+idf.py -p /dev/serial0 flash
+idf.py -p /dev/serial0 monitor
