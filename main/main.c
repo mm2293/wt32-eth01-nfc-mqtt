@@ -11,6 +11,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <inttypes.h>
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
@@ -52,7 +53,7 @@ static void card_event_task(void *pvParameters)
         for (int i = 0; i < card.uid_len; i++) {
             sprintf(uid_str + (i * 2), "%02X", card.uid[i]);
         }
-        ESP_LOGI(TAG, "Karte erkannt! UID=%s SAK=0x%02X ISO14443-4=%d Session=%u",
+        ESP_LOGI(TAG, "Karte erkannt! UID=%s SAK=0x%02X ISO14443-4=%d Session=%" PRIu32,
                  uid_str, card.sak, card.iso14443_4, session_id);
 
         mqtt_client_setup_publish_card(card.uid, card.uid_len, card.sak, card.atqa,
@@ -67,7 +68,7 @@ static void card_event_task(void *pvParameters)
                 bool session_ended = false;
                 if (!mqtt_client_setup_wait_apdu_cmd(session_id, &cmd, &session_ended, 3000)) {
                     if (!session_ended) {
-                        ESP_LOGW(TAG, "Session %u: Timeout, breche APDU-Relay ab", session_id);
+                        ESP_LOGW(TAG, "Session %" PRIu32 ": Timeout, breche APDU-Relay ab", session_id);
                     }
                     break;
                 }
@@ -78,7 +79,7 @@ static void card_event_task(void *pvParameters)
                 if (err == ESP_OK) {
                     mqtt_client_setup_publish_apdu_response(session_id, true, resp, resp_len, NULL);
                 } else {
-                    ESP_LOGW(TAG, "Session %u: InDataExchange fehlgeschlagen (%s)", session_id, esp_err_to_name(err));
+                    ESP_LOGW(TAG, "Session %" PRIu32 ": InDataExchange fehlgeschlagen (%s)", session_id, esp_err_to_name(err));
                     mqtt_client_setup_publish_apdu_response(session_id, false, NULL, 0, "pn532_data_exchange fehlgeschlagen");
                 }
             }
