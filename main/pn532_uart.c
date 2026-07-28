@@ -362,18 +362,20 @@ esp_err_t pn532_poll_once(pn532_card_t *out_card, uint32_t timeout_ms)
     return ESP_OK;
 }
 
-static esp_err_t pn532_data_exchange_once(const uint8_t *apdu, size_t apdu_len,
-                                           uint8_t *resp, size_t resp_cap, size_t *resp_len,
-                                           uint32_t timeout_ms)
+/* Holt ein einzelnes InDataExchange-Antwort-Frame ab und prueft Statusbyte
+ * und Puffergrenzen. is_continuation=true bedeutet: params enthaelt NUR das
+ * Zielnummer-Byte (keine neuen APDU-Daten) -- das ist die Anfrage an den
+ * PN532, das naechste Stueck einer bereits laufenden "more data"-Antwort
+ * nachzuliefern (siehe pn532_data_exchange_once()). *out_more zeigt an, ob
+ * Bit 0x40 gesetzt war (weitere Fortsetzung noetig). */
+static esp_err_t pn532_data_exchange_fetch(const uint8_t *params, size_t params_len,
+                                            uint8_t *chunk, size_t chunk_cap,
+                                            size_t *chunk_len, bool *out_more,
+                                            uint32_t timeout_ms)
 {
-    uint8_t params[300];
-    if (apdu_len + 1 > sizeof(params)) return ESP_ERR_INVALID_SIZE;
-    params[0] = s_last_target_number;
-    memcpy(&params[1], apdu, apdu_len);
-
     uint8_t raw_resp[300];
     size_t raw_len = 0;
-    esp_err_t err = pn532_command(PN532_CMD_IN_DATA_EXCHANGE, params, apdu_len + 1,
+    esp_err_t err = pn532_command(PN532_CMD_IN_DATA_EXCHANGE, params, params_len,
                                    raw_resp, sizeof(raw_resp), &raw_len, timeout_ms);
     if (err != ESP_OK) return err;
     if (raw_len < 1) return ESP_ERR_INVALID_RESPONSE;
@@ -384,31 +386,83 @@ static esp_err_t pn532_data_exchange_once(const uint8_t *apdu, size_t apdu_len,
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    // Bit 0x40 = "more data folgt" (die Zielkarte/das Geraet hat mehr
-    // Antwortdaten geschickt, als in dieses InDataExchange-Ergebnis passten --
-    // z.B. bei grossen HomeKey-ATTESTATION-Antworten). Wir holen diese
-    // Fortsetzung aktuell NICHT ab (siehe PROTOCOL.md "Bekannte
-    // Einschraenkung") -- WICHTIG: statt die Antwort still abgeschnitten als
-    // "OK" zurueckzugeben (das fuehrte zu kaputten/abgeschnittenen CBOR-
-    // Paketen und verwirrenden Python-seitigen Parsing-Abstuerzen), hier
-    // laut fehlschlagen, damit der eigentliche Grund sichtbar ist.
-    if (raw_resp[0] & 0x40) {
-        ESP_LOGW(TAG, "InDataExchange: Antwort ist laenger als unterstuetzt "
-                       "(more-data-Bit gesetzt, %d Byte empfangen) -- Fortsetzung "
-                       "wird nicht abgeholt, Extended-Length-Antworten werden noch "
-                       "nicht unterstuetzt", (int)(raw_len - 1));
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-
     size_t data_len = raw_len - 1;
-    if (data_len > resp_cap) {
-        ESP_LOGW(TAG, "InDataExchange: Antwort (%d Byte) passt nicht in den "
+    if (data_len > chunk_cap) {
+        ESP_LOGW(TAG, "InDataExchange: Fortsetzungsstueck (%d Byte) passt nicht in den "
                        "Puffer (%d Byte) -- breche ab statt still abzuschneiden",
-                 (int)data_len, (int)resp_cap);
+                 (int)data_len, (int)chunk_cap);
         return ESP_ERR_INVALID_SIZE;
     }
-    memcpy(resp, &raw_resp[1], data_len);
-    *resp_len = data_len;
+    memcpy(chunk, &raw_resp[1], data_len);
+    *chunk_len = data_len;
+    *out_more = (raw_resp[0] & 0x40) != 0;
+    return ESP_OK;
+}
+
+/* Fuehrt ein InDataExchange aus und holt bei Bedarf ueber weitere
+ * InDataExchange-Aufrufe (nur Zielnummer-Byte, keine neuen Daten) die
+ * Fortsetzung ab, solange Bit 0x40 ("more data folgt") gesetzt bleibt --
+ * so werden z.B. grosse HomeKey-ATTESTATION-CBOR-Envelopes, die der PN532
+ * nicht in einem einzelnen Kurzframe (~253 Byte Nutzdaten) liefern kann,
+ * ueber mehrere Aufrufe im resp-Puffer zusammengesetzt.
+ *
+ * WICHTIG: dieses Fortsetzungsschema (Anfrage nur mit Zielnummer-Byte, ohne
+ * neue APDU-Daten) ist aus einem gaengigen/plausiblen PN532-Verwendungsmuster
+ * abgeleitet, nicht gegen das NXP-Datenblatt verifiziert -- muss auf echter
+ * Hardware bestaetigt werden (siehe PROTOCOL.md). */
+static esp_err_t pn532_data_exchange_once(const uint8_t *apdu, size_t apdu_len,
+                                           uint8_t *resp, size_t resp_cap, size_t *resp_len,
+                                           uint32_t timeout_ms)
+{
+    uint8_t params[300];
+    if (apdu_len + 1 > sizeof(params)) return ESP_ERR_INVALID_SIZE;
+    params[0] = s_last_target_number;
+    memcpy(&params[1], apdu, apdu_len);
+
+    size_t total_len = 0;
+    bool more = false;
+    esp_err_t err = pn532_data_exchange_fetch(params, apdu_len + 1,
+                                               resp, resp_cap, &total_len, &more, timeout_ms);
+    if (err != ESP_OK) return err;
+
+    int continuation_count = 0;
+    while (more) {
+        continuation_count++;
+        ESP_LOGI(TAG, "InDataExchange: hole Fortsetzung ab (bisher %d Byte, Abholung #%d)...",
+                 (int)total_len, continuation_count);
+
+        if (continuation_count > 32) {
+            // Schutz gegen eine kaputte/unerwartete Endlosschleife -- eine
+            // reale Antwort (auch die groessten HomeKey-Envelopes) braucht
+            // dafuer keine 32 Fortsetzungsstuecke.
+            ESP_LOGW(TAG, "InDataExchange: zu viele Fortsetzungsstuecke (>%d) -- breche ab",
+                     continuation_count);
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+
+        uint8_t continuation_params[] = {s_last_target_number};
+        uint8_t chunk[300];
+        size_t chunk_len = 0;
+        err = pn532_data_exchange_fetch(continuation_params, sizeof(continuation_params),
+                                         chunk, sizeof(chunk), &chunk_len, &more, timeout_ms);
+        if (err != ESP_OK) return err;
+
+        if (total_len + chunk_len > resp_cap) {
+            ESP_LOGW(TAG, "InDataExchange: zusammengesetzte Antwort (%d Byte) passt nicht in "
+                           "den Puffer (%d Byte) -- breche ab statt still abzuschneiden",
+                     (int)(total_len + chunk_len), (int)resp_cap);
+            return ESP_ERR_INVALID_SIZE;
+        }
+        memcpy(&resp[total_len], chunk, chunk_len);
+        total_len += chunk_len;
+    }
+
+    if (continuation_count > 0) {
+        ESP_LOGI(TAG, "InDataExchange: Fortsetzung komplett abgeholt (%d Byte gesamt, %d Abholungen)",
+                 (int)total_len, continuation_count);
+    }
+
+    *resp_len = total_len;
     return ESP_OK;
 }
 

@@ -5,7 +5,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define MQTT_APDU_MAX_LEN 250
+// War 250 (ein einzelner PN532-Kurzframe): jetzt gross genug fuer per
+// InDataExchange-Fortsetzung ("more data"-Bit) zusammengesetzte Antworten
+// (z.B. HomeKey-ATTESTATION-Envelopes), siehe pn532_uart.c:pn532_data_exchange_once().
+#define MQTT_APDU_MAX_LEN 2048
 
 typedef struct {
     uint32_t session_id;

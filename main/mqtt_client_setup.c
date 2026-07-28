@@ -91,21 +91,37 @@ static void handle_apdu_cmd_message(const char *payload)
         return;
     }
 
-    session_queue_item_t item = {0};
-    item.is_session_end = false;
-    item.session_id = (uint32_t)session_id_item->valuedouble;
-    item.apdu_len = hex_decode(apdu_hex_item->valuestring, item.apdu, sizeof(item.apdu));
+    // Heap statt Stack: session_queue_item_t enthaelt seit MQTT_APDU_MAX_LEN=2048
+    // ein ~2KB grosses apdu[]-Feld. Diese Funktion laeuft im internen
+    // Event-Handler-Task von esp-mqtt, dessen Stackgroesse hier nicht
+    // konfiguriert/verifiziert ist -- ein weiterer Stack-Local dieser Groesse
+    // waere ein Stack-Overflow-Risiko.
+    session_queue_item_t *item = malloc(sizeof(session_queue_item_t));
+    if (item == NULL) {
+        ESP_LOGE(TAG, "apdu_cmd: kein Speicher fuer session_queue_item_t");
+        cJSON_Delete(json);
+        return;
+    }
+    memset(item, 0, sizeof(*item));
+    item->is_session_end = false;
+    item->session_id = (uint32_t)session_id_item->valuedouble;
+    item->apdu_len = hex_decode(apdu_hex_item->valuestring, item->apdu, sizeof(item->apdu));
 
     cJSON_Delete(json);
 
-    if (item.apdu_len == 0) {
+    if (item->apdu_len == 0) {
         ESP_LOGW(TAG, "apdu_cmd mit leerem/ungueltigem apdu_hex ignoriert");
+        free(item);
         return;
     }
 
     if (s_session_queue != NULL) {
-        xQueueSend(s_session_queue, &item, 0);
+        // xQueueSend kopiert den Inhalt in den internen Queue-Speicher (auf
+        // dem Heap, von xQueueCreate angelegt) -- item kann danach sofort
+        // freigegeben werden.
+        xQueueSend(s_session_queue, item, 0);
     }
+    free(item);
 }
 
 static void handle_homekey_group_id_message(const char *payload)
@@ -136,16 +152,26 @@ static void handle_result_message(const char *payload)
         ESP_LOGI(TAG, "Zutritt verweigert");
     }
 
-    session_queue_item_t item = {0};
-    item.is_session_end = true;
+    // Heap statt Stack, siehe Kommentar in handle_apdu_cmd_message() --
+    // gleicher Grund (session_queue_item_t ist seit MQTT_APDU_MAX_LEN=2048
+    // zu gross fuer den unklar dimensionierten esp-mqtt-Event-Handler-Stack).
+    session_queue_item_t *item = malloc(sizeof(session_queue_item_t));
+    if (item == NULL) {
+        ESP_LOGE(TAG, "result: kein Speicher fuer session_queue_item_t");
+        cJSON_Delete(json);
+        return;
+    }
+    memset(item, 0, sizeof(*item));
+    item->is_session_end = true;
     cJSON *session_id_item = cJSON_GetObjectItem(json, "session_id");
-    item.session_id = cJSON_IsNumber(session_id_item) ? (uint32_t)session_id_item->valuedouble : 0;
+    item->session_id = cJSON_IsNumber(session_id_item) ? (uint32_t)session_id_item->valuedouble : 0;
 
     cJSON_Delete(json);
 
     if (s_session_queue != NULL) {
-        xQueueSend(s_session_queue, &item, 0);
+        xQueueSend(s_session_queue, item, 0);
     }
+    free(item);
 }
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
@@ -177,9 +203,21 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
             break;
 
         case MQTT_EVENT_DATA: {
-            char payload[1024] = {0};
-            int copy_len = event->data_len < (int)sizeof(payload) - 1 ? event->data_len : (int)sizeof(payload) - 1;
+            // Heap statt Stack: ein apdu_cmd-JSON kann bei
+            // MQTT_APDU_MAX_LEN=2048 bis zu ~4100 Byte gross werden
+            // (hex-kodiertes APDU + JSON-Huelle). Dieser Handler laeuft im
+            // internen esp-mqtt-Event-Handler-Task, dessen Stackgroesse hier
+            // nicht konfiguriert/verifiziert ist -- ein so grosser
+            // Stack-Local waere ein Stack-Overflow-Risiko.
+            size_t payload_cap = MQTT_APDU_MAX_LEN * 2 + 256;
+            char *payload = malloc(payload_cap);
+            if (payload == NULL) {
+                ESP_LOGE(TAG, "MQTT_EVENT_DATA: kein Speicher fuer Payload-Puffer");
+                break;
+            }
+            int copy_len = event->data_len < (int)payload_cap - 1 ? event->data_len : (int)payload_cap - 1;
             memcpy(payload, event->data, copy_len);
+            payload[copy_len] = '\0';
 
             char topic[64] = {0};
             int topic_copy_len = event->topic_len < (int)sizeof(topic) - 1 ? event->topic_len : (int)sizeof(topic) - 1;
@@ -193,6 +231,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
             } else if (strcmp(topic, TOPIC_INCOMING_HOMEKEY_GROUP_ID) == 0) {
                 handle_homekey_group_id_message(payload);
             }
+            free(payload);
             break;
         }
 
@@ -205,10 +244,18 @@ esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, c
 {
     s_session_queue = xQueueCreate(8, sizeof(session_queue_item_t));
 
+    // Default-Puffergroesse von esp-mqtt (1024 Byte) reicht seit
+    // MQTT_APDU_MAX_LEN=2048 nicht mehr fuer ein hex-kodiertes apdu_cmd/
+    // apdu_resp-JSON (~4100 Byte) -- sonst wuerde die Nachricht von esp-mqtt
+    // intern schon vor MQTT_EVENT_DATA abgeschnitten/verworfen, unabhaengig
+    // vom lokalen payload-Puffer oben.
+    size_t mqtt_buffer_size = MQTT_APDU_MAX_LEN * 2 + 256;
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = broker_uri,
         .credentials.username = username,
         .credentials.authentication.password = password,
+        .buffer.size = mqtt_buffer_size,
+        .buffer.out_size = mqtt_buffer_size,
     };
 
     s_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
