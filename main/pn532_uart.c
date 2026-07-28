@@ -384,8 +384,29 @@ static esp_err_t pn532_data_exchange_once(const uint8_t *apdu, size_t apdu_len,
         return ESP_ERR_INVALID_RESPONSE;
     }
 
+    // Bit 0x40 = "more data folgt" (die Zielkarte/das Geraet hat mehr
+    // Antwortdaten geschickt, als in dieses InDataExchange-Ergebnis passten --
+    // z.B. bei grossen HomeKey-ATTESTATION-Antworten). Wir holen diese
+    // Fortsetzung aktuell NICHT ab (siehe PROTOCOL.md "Bekannte
+    // Einschraenkung") -- WICHTIG: statt die Antwort still abgeschnitten als
+    // "OK" zurueckzugeben (das fuehrte zu kaputten/abgeschnittenen CBOR-
+    // Paketen und verwirrenden Python-seitigen Parsing-Abstuerzen), hier
+    // laut fehlschlagen, damit der eigentliche Grund sichtbar ist.
+    if (raw_resp[0] & 0x40) {
+        ESP_LOGW(TAG, "InDataExchange: Antwort ist laenger als unterstuetzt "
+                       "(more-data-Bit gesetzt, %d Byte empfangen) -- Fortsetzung "
+                       "wird nicht abgeholt, Extended-Length-Antworten werden noch "
+                       "nicht unterstuetzt", (int)(raw_len - 1));
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
     size_t data_len = raw_len - 1;
-    if (data_len > resp_cap) data_len = resp_cap;
+    if (data_len > resp_cap) {
+        ESP_LOGW(TAG, "InDataExchange: Antwort (%d Byte) passt nicht in den "
+                       "Puffer (%d Byte) -- breche ab statt still abzuschneiden",
+                 (int)data_len, (int)resp_cap);
+        return ESP_ERR_INVALID_SIZE;
+    }
     memcpy(resp, &raw_resp[1], data_len);
     *resp_len = data_len;
     return ESP_OK;

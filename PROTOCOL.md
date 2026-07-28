@@ -94,6 +94,20 @@ reicht das. Der HomeKey-ATTESTATION-Flow (grosse CBOR/mdoc-Envelopes beim
 allerersten Pairing eines neuen Geraets ohne bekannten Issuer) kann das
 ueberschreiten und ist damit noch nicht abgedeckt.
 
+Real-Hardware-Test bestaetigt: In diesem Fall setzt der PN532 in der
+InDataExchange-Antwort Bit 0x40 ("more data folgt"), das
+`pn532_data_exchange_once()` bis vor kurzem stillschweigend ignoriert und
+maskiert hat (`status = raw_resp[0] & 0x3F`) -- dadurch kam beim Addon ein
+unbemerkt abgeschnittenes CBOR-Paket an, das dort erst viel spaeter beim
+Parsen mit einem verwirrenden "index out of bounds"-Fehler abgestuerzt ist,
+statt dass der eigentliche Grund (Antwort zu lang) sichtbar wurde.
+`pn532_data_exchange_once()` bricht bei gesetztem 0x40-Bit jetzt sauber mit
+`ESP_ERR_NOT_SUPPORTED` ab (ebenso, wenn eine Antwort nicht in den
+Empfangspuffer passt) -- das macht die Einschraenkung nur sichtbar, hebt sie
+aber noch nicht auf. Echte Unterstuetzung braeuchte zusaetzliche
+InDataExchange-Aufrufe zum Abholen der Fortsetzung, das ist noch nicht
+implementiert.
+
 Erste Real-Hardware-Tests zeigten, dass die Karte zwischen Erkennung und dem
 ersten APDU (die Zeit fuer den MQTT/Worker-Thread-Rundlauf zum Addon und
 zurueck, in der Praxis ~700ms) ihre ISO14443-4-Sitzung verlieren kann (PN532
