@@ -4,12 +4,24 @@
  * Pin-Belegung (WT32-ETH01):
  *   - TX: IO14 (ESP32) -> RX (PN532)
  *   - RX: IO15 (ESP32) -> TX (PN532) [mit internem Pull-Up]
+ *
+ * Neben den Basisbefehlen (SAMConfiguration, InListPassiveTarget) enthaelt
+ * dieses Modul jetzt auch:
+ *   - Den ECP-Broadcast-Frame (InCommunicateThru + CRC-A), der ein iPhone/
+ *     eine Watch mit Apple Home Key ueberhaupt erst dazu bringt, auf
+ *     InListPassiveTarget zu antworten. Byte-fuer-Byte nachgebildet aus
+ *     kormax/apple-home-key-reader (util/bfclf.py:sense_broadcast() und
+ *     util/ecp.py:ECP.home()), dort via nfcpy/PN532-Chipset-Kommandos.
+ *   - InDataExchange, um nach der Erkennung weitere ISO7816-APDUs mit einer
+ *     bereits selektierten Karte auszutauschen (fuer DESFire/HomeKey; wird
+ *     vom MQTT-APDU-Relay in main.c benutzt).
  */
 
 #include "pn532_uart.h"
 
 #include <string.h>
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
 
@@ -19,9 +31,39 @@ static const char *TAG = "pn532_uart";
 #define PN532_UART_TX_PIN    14
 #define PN532_UART_RX_PIN    15
 #define PN532_UART_BAUDRATE  115200
-#define PN532_UART_BUF_SIZE  256
+#define PN532_UART_BUF_SIZE  512
+
+// PN532-Kommandocodes (Host -> PN532, TFI 0xD4)
+#define PN532_CMD_WRITE_REGISTER          0x08
+#define PN532_CMD_RF_CONFIGURATION        0x32
+#define PN532_CMD_IN_DATA_EXCHANGE        0x40
+#define PN532_CMD_IN_COMMUNICATE_THRU     0x42
+#define PN532_CMD_IN_LIST_PASSIVE_TARGET  0x4A
+#define PN532_CMD_IN_RELEASE              0x52
+#define PN532_CMD_SAM_CONFIGURATION       0x14
+
+// CIU-Registeradressen (identisch zu nfcpy's REG-Tabelle, siehe
+// nfc/clf/pn53x.py -- der CIU-Kern des PN532 ist zum MFRC522 kompatibel)
+#define PN532_REG_CIU_BIT_FRAMING  0x633D
 
 static const uint8_t PN532_ACK_FRAME[] = {0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00};
+
+// HomeKey-ECP: Terminal-Type "Access" / Subtype "HomeKey", TCI-Praefix.
+// Siehe homekey_lib/util/ecp.py:TYPE_ACCESS, SUBTYPE_HOMEKEY, TCI_HOMEKEY.
+#define ECP_HEADER           0x6A
+#define ECP_VERSION_2        0x02
+#define ECP_TERMINAL_TYPE_ACCESS    0x02
+#define ECP_TERMINAL_SUBTYPE_HOMEKEY 0x06
+static const uint8_t ECP_TCI_HOMEKEY[] = {0x02, 0x11, 0x00};
+
+static uint8_t s_homekey_group_identifier[8] = {0};
+static uint8_t s_last_target_number = 0;
+static bool s_target_selected = false;
+
+void pn532_set_homekey_group_identifier(const uint8_t identifier[8])
+{
+    memcpy(s_homekey_group_identifier, identifier, sizeof(s_homekey_group_identifier));
+}
 
 esp_err_t pn532_uart_init(void)
 {
@@ -43,6 +85,23 @@ esp_err_t pn532_uart_init(void)
 
     ESP_LOGI(TAG, "PN532 UART (TX=%d, RX=%d) initialisiert", PN532_UART_TX_PIN, PN532_UART_RX_PIN);
     return ESP_OK;
+}
+
+/* ISO/IEC 14443-3 CRC_A (Praeset 0x6363), wird u.a. fuer den rohen
+ * ECP-Broadcast-Frame gebraucht, den InCommunicateThru NICHT automatisch
+ * mit CRC versieht (anders als z.B. InListPassiveTarget-Kommandos, die vom
+ * PN532 intern per ISO14443-Framing behandelt werden). */
+static void crc_a(const uint8_t *data, size_t len, uint8_t crc_out[2])
+{
+    uint16_t w_crc = 0x6363;
+    for (size_t i = 0; i < len; i++) {
+        uint8_t bt = data[i];
+        bt ^= (uint8_t)(w_crc & 0x00FF);
+        bt ^= (uint8_t)(bt << 4);
+        w_crc = (uint16_t)((w_crc >> 8) ^ ((uint16_t)bt << 8) ^ ((uint16_t)bt << 3) ^ (bt >> 4));
+    }
+    crc_out[0] = (uint8_t)(w_crc & 0xFF);
+    crc_out[1] = (uint8_t)((w_crc >> 8) & 0xFF);
 }
 
 static void pn532_send_frame(const uint8_t *tfi_and_data, size_t len)
@@ -76,89 +135,271 @@ static bool pn532_wait_for_ack(int timeout_ms)
     return memcmp(buf, PN532_ACK_FRAME, sizeof(PN532_ACK_FRAME)) == 0;
 }
 
+/* Liest genau EIN normales PN532-Antwort-Frame:
+ *   00 00 FF LEN LCS D5 <RESPCODE> <DATA...> DCS 00
+ * *out_data erhaelt <DATA...> (ohne TFI 0xD5 und RESPCODE).
+ * Unterstuetzt KEINE Extended-Length-Frames (LEN==0xFF) -- fuer unsere
+ * Kommandos (Register/RFConfig/Broadcast/List/DataExchange mit kurzen APDUs)
+ * bleibt die Antwort immer unter 255 Byte. */
+static esp_err_t pn532_read_response_frame(uint8_t *out_data, size_t out_cap,
+                                            size_t *out_len, uint8_t *out_response_code,
+                                            uint32_t timeout_ms)
+{
+    int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    int zero_count = 0;
+    uint8_t b;
+
+    // Praeambel/Startcode ueberlesen, bis "00 00 FF" gefunden wurde
+    while (1) {
+        if (esp_timer_get_time() > deadline_us) return ESP_ERR_TIMEOUT;
+        int n = uart_read_bytes(PN532_UART_PORT, &b, 1, pdMS_TO_TICKS(50));
+        if (n <= 0) continue;
+        if (b == 0xFF && zero_count >= 2) break;
+        zero_count = (b == 0x00) ? zero_count + 1 : 0;
+    }
+
+    uint8_t len_lcs[2];
+    if (uart_read_bytes(PN532_UART_PORT, len_lcs, 2, pdMS_TO_TICKS(200)) != 2) {
+        return ESP_ERR_TIMEOUT;
+    }
+    uint8_t len = len_lcs[0];
+
+    if (len == 0x00) {
+        // Das war ein ACK-Frame (LEN=00 LCS=FF), keine echte Antwort -- der
+        // Aufrufer wartet i.d.R. schon separat per pn532_wait_for_ack() darauf,
+        // aber falls wir hier landen: sauber weiterlesen statt haengenzubleiben.
+        uint8_t discard;
+        uart_read_bytes(PN532_UART_PORT, &discard, 1, pdMS_TO_TICKS(50));
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (len == 0xFF) {
+        return ESP_ERR_NOT_SUPPORTED;  // Extended-Length-Frame, nicht unterstuetzt
+    }
+
+    uint8_t frame_data[300];
+    if ((size_t)len + 1 > sizeof(frame_data)) return ESP_ERR_INVALID_SIZE;
+
+    int remaining_ms = (int)((deadline_us - esp_timer_get_time()) / 1000);
+    if (remaining_ms < 50) remaining_ms = 50;
+    if (uart_read_bytes(PN532_UART_PORT, frame_data, len + 1, pdMS_TO_TICKS(remaining_ms)) != len + 1) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    if (len < 2 || frame_data[0] != 0xD5) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    *out_response_code = frame_data[1];
+    size_t data_len = (size_t)len - 2;
+    if (data_len > out_cap) data_len = out_cap;
+    memcpy(out_data, &frame_data[2], data_len);
+    *out_len = data_len;
+
+    // Postamble (0x00) noch abholen, best effort
+    uint8_t postamble;
+    uart_read_bytes(PN532_UART_PORT, &postamble, 1, pdMS_TO_TICKS(20));
+
+    return ESP_OK;
+}
+
+/* Sendet ein D4-Kommando (cmd_code + params), wartet auf ACK und liest die
+ * zugehoerige Antwort. out_data erhaelt die Nutzdaten der Antwort (ohne
+ * Response-Code, der implizit auf cmd_code+1 geprueft wird). */
+static esp_err_t pn532_command(uint8_t cmd_code, const uint8_t *params, size_t params_len,
+                                uint8_t *out_data, size_t out_cap, size_t *out_len,
+                                uint32_t timeout_ms)
+{
+    uint8_t frame[300];
+    if (params_len > sizeof(frame) - 2) return ESP_ERR_INVALID_SIZE;
+    frame[0] = 0xD4;
+    frame[1] = cmd_code;
+    if (params_len) memcpy(&frame[2], params, params_len);
+    pn532_send_frame(frame, 2 + params_len);
+
+    if (!pn532_wait_for_ack(200)) {
+        ESP_LOGW(TAG, "Kein ACK fuer Kommando 0x%02X", cmd_code);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    size_t local_len = 0;
+    uint8_t response_code = 0;
+    esp_err_t err = pn532_read_response_frame(out_data, out_cap, &local_len, &response_code, timeout_ms);
+    if (err != ESP_OK) return err;
+
+    if (response_code != (uint8_t)(cmd_code + 1)) {
+        ESP_LOGW(TAG, "Unerwarteter Response-Code 0x%02X (erwartet 0x%02X) fuer Kommando 0x%02X",
+                 response_code, (uint8_t)(cmd_code + 1), cmd_code);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    if (out_len) *out_len = local_len;
+    return ESP_OK;
+}
+
+static esp_err_t pn532_write_register(uint16_t addr, uint8_t value)
+{
+    uint8_t params[] = {(uint8_t)(addr >> 8), (uint8_t)(addr & 0xFF), value};
+    uint8_t resp[8];
+    size_t resp_len = 0;
+    return pn532_command(PN532_CMD_WRITE_REGISTER, params, sizeof(params), resp, sizeof(resp), &resp_len, 200);
+}
+
+static esp_err_t pn532_rf_configuration(uint8_t cfg_item, const uint8_t *cfg_data, size_t cfg_len)
+{
+    uint8_t params[16];
+    if (cfg_len + 1 > sizeof(params)) return ESP_ERR_INVALID_SIZE;
+    params[0] = cfg_item;
+    memcpy(&params[1], cfg_data, cfg_len);
+    uint8_t resp[8];
+    size_t resp_len = 0;
+    return pn532_command(PN532_CMD_RF_CONFIGURATION, params, cfg_len + 1, resp, sizeof(resp), &resp_len, 200);
+}
+
 esp_err_t pn532_sam_configuration(void)
 {
-    uint8_t cmd[] = {0xD4, 0x14, 0x01, 0x00};
-    pn532_send_frame(cmd, sizeof(cmd));
-
-    if (!pn532_wait_for_ack(100)) return ESP_FAIL;
-
-    uint8_t response[32];
-    uart_read_bytes(PN532_UART_PORT, response, sizeof(response), pdMS_TO_TICKS(200));
-
+    uint8_t params[] = {0x01, 0x00};
+    uint8_t resp[8];
+    size_t resp_len = 0;
+    esp_err_t err = pn532_command(PN532_CMD_SAM_CONFIGURATION, params, sizeof(params), resp, sizeof(resp), &resp_len, 200);
+    if (err != ESP_OK) return err;
     ESP_LOGI(TAG, "SAMConfiguration erfolgreich");
-    return ESP_OK;
-}
 
-esp_err_t pn532_start_auto_poll(void)
-{
-    // D4 60: InAutoPoll
-    // 0xFF: Endlose Versuche
-    // 0x01: Poll-Periode (150ms)
-    // 0x00: Standard Type A (ISO14443A / MIFARE)
-    uint8_t cmd[] = {0xD4, 0x60, 0xFF, 0x01, 0x00};
-    pn532_send_frame(cmd, sizeof(cmd));
-
-    if (!pn532_wait_for_ack(100)) {
-        ESP_LOGE(TAG, "InAutoPoll: kein ACK erhalten");
-        return ESP_ERR_TIMEOUT;
-    }
+    // Basiskonfiguration wie in nfcpy's PN532-Init (nfc/clf/pn532.py:Device.__init__):
+    // WICHTIG ist vor allem Item 0x05 (MaxRetries) mit MxRtyPassiveActivation=1 --
+    // ohne das wuerde InListPassiveTarget bei leerem Feld je nach Werkseinstellung
+    // sehr lange/unbegrenzt blockieren, statt schnell mit NbTg=0 zu antworten. Das
+    // ist Voraussetzung dafuer, dass sich Polling und ECP-Broadcast (siehe
+    // pn532_poll_once()) im schnellen Wechsel abwechseln koennen.
+    static const uint8_t timings[] = {0x00, 0x0B, 0x0A};
+    static const uint8_t max_retries[] = {0x01, 0x00, 0x01};
+    pn532_rf_configuration(0x02, timings, sizeof(timings));
+    pn532_rf_configuration(0x04, (const uint8_t[]){0x00}, 1);
+    pn532_rf_configuration(0x05, max_retries, sizeof(max_retries));
 
     return ESP_OK;
 }
 
-esp_err_t pn532_read_auto_poll_response(pn532_card_t *out_card, uint32_t timeout_ms)
+/* Sendet den ECP-"Home"-Broadcast-Frame per InCommunicateThru, damit ein
+ * HomeKey-faehiges Geraet im Feld aufwacht. Vor dem eigentlichen Broadcast
+ * werden -- wie im Original -- Detection-Retries deaktiviert und ein kurzes
+ * Antwort-Timeout gesetzt, damit die Broadcast-Sequenz nicht durch die
+ * normalen Polling-Retries des PN532 gestoert wird. Ein Timeout beim
+ * InCommunicateThru selbst ist normal (nicht jedes Geraet antwortet auf den
+ * Broadcast) und wird hier nicht als Fehler gewertet. */
+static void pn532_send_homekey_broadcast(void)
 {
-    uint8_t first_byte;
-    // 1. Warte auf das allererste Byte der Antwort (blockiert ohne CPU-Last)
-    int res = uart_read_bytes(PN532_UART_PORT, &first_byte, 1, pdMS_TO_TICKS(timeout_ms));
-    if (res <= 0) {
-        return ESP_ERR_TIMEOUT;
+    static const uint8_t detection_retries[] = {0xFF, 0x01, 0x00};
+    static const uint8_t timings[] = {0x0A, 0x0B, 0x08};
+    pn532_rf_configuration(0x05, detection_retries, sizeof(detection_retries));
+    pn532_rf_configuration(0x02, timings, sizeof(timings));
+    pn532_write_register(PN532_REG_CIU_BIT_FRAMING, 0x00);
+
+    uint8_t payload[5 + sizeof(ECP_TCI_HOMEKEY) + sizeof(s_homekey_group_identifier)];
+    uint8_t terminal_info = (uint8_t)((1 << 7) | (1 << 6) | (sizeof(ECP_TCI_HOMEKEY) + sizeof(s_homekey_group_identifier)));
+    payload[0] = ECP_HEADER;
+    payload[1] = ECP_VERSION_2;
+    payload[2] = terminal_info;
+    payload[3] = ECP_TERMINAL_TYPE_ACCESS;
+    payload[4] = ECP_TERMINAL_SUBTYPE_HOMEKEY;
+    memcpy(&payload[5], ECP_TCI_HOMEKEY, sizeof(ECP_TCI_HOMEKEY));
+    memcpy(&payload[5 + sizeof(ECP_TCI_HOMEKEY)], s_homekey_group_identifier, sizeof(s_homekey_group_identifier));
+
+    uint8_t crc[2];
+    crc_a(payload, sizeof(payload), crc);
+
+    uint8_t broadcast_with_crc[sizeof(payload) + 2];
+    memcpy(broadcast_with_crc, payload, sizeof(payload));
+    broadcast_with_crc[sizeof(payload)] = crc[0];
+    broadcast_with_crc[sizeof(payload) + 1] = crc[1];
+
+    uint8_t resp[64];
+    size_t resp_len = 0;
+    // Kurzes Timeout: es ist normal, dass hier haeufig nichts antwortet.
+    pn532_command(PN532_CMD_IN_COMMUNICATE_THRU, broadcast_with_crc, sizeof(broadcast_with_crc),
+                  resp, sizeof(resp), &resp_len, 250);
+}
+
+esp_err_t pn532_poll_once(pn532_card_t *out_card, uint32_t timeout_ms)
+{
+    s_target_selected = false;
+
+    // BrTy 0x00 = 106 kbps Type A (ISO14443A / Mifare / DESFire / HomeKey)
+    uint8_t params[] = {0x01, 0x00};
+    uint8_t resp[300];
+    size_t resp_len = 0;
+
+    esp_err_t err = pn532_command(PN532_CMD_IN_LIST_PASSIVE_TARGET, params, sizeof(params),
+                                   resp, sizeof(resp), &resp_len, timeout_ms);
+
+    if (err != ESP_OK || resp_len < 1 || resp[0] == 0) {
+        // Nichts gefunden: HomeKey-Broadcast senden, damit ein wartendes
+        // Geraet beim naechsten Zyklus antwortet.
+        pn532_send_homekey_broadcast();
+        return ESP_ERR_NOT_FOUND;
     }
 
-    // 2. Kurze Pause (30ms), damit der PN532 den Rest des Frames schicken kann
-    vTaskDelay(pdMS_TO_TICKS(30));
+    // resp: NbTg(1) Tg(1) SensRes(2) SelRes(1) NFCIDLength(1) NFCID(...) [ATSLength ATS...]
+    if (resp_len < 7) return ESP_ERR_NOT_FOUND;
 
-    // 3. Ermittle verfügbare Bytes im UART-Puffer
-    size_t available_bytes = 0;
-    uart_get_buffered_data_len(PN532_UART_PORT, &available_bytes);
-
-    uint8_t response[64];
-    response[0] = first_byte;
-
-    // 4. Lies den Rest ohne weiteres Warten aus
-    int read_bytes = uart_read_bytes(PN532_UART_PORT, &response[1],
-                                     (available_bytes < 63) ? available_bytes : 63,
-                                     pdMS_TO_TICKS(50));
-    int len = 1 + read_bytes;
-
-    if (len < 12) return ESP_ERR_NOT_FOUND;
-
-    // Suche Antwort-Header D5 61
-    int idx = -1;
-    for (int i = 0; i < len - 1; i++) {
-        if (response[i] == 0xD5 && response[i + 1] == 0x61) {
-            idx = i;
-            break;
-        }
-    }
-
-    if (idx < 0 || idx + 9 >= len) return ESP_ERR_NOT_FOUND;
-
-    uint8_t num_tags = response[idx + 2];
-    if (num_tags == 0) return ESP_ERR_NOT_FOUND;
-
-    out_card->atqa[0] = response[idx + 6];
-    out_card->atqa[1] = response[idx + 7];
-    out_card->sak = response[idx + 8];
-
-    uint8_t uid_len = response[idx + 9];
-    if (uid_len > sizeof(out_card->uid) || idx + 10 + uid_len > len) {
+    uint8_t tg = resp[1];
+    uint8_t uid_len = resp[6];
+    if (uid_len > sizeof(out_card->uid) || (size_t)(7 + uid_len) > resp_len) {
         return ESP_ERR_INVALID_SIZE;
     }
 
-    memcpy(out_card->uid, &response[idx + 10], uid_len);
+    memset(out_card, 0, sizeof(*out_card));
+    out_card->atqa[0] = resp[2];
+    out_card->atqa[1] = resp[3];
+    out_card->sak = resp[4];
     out_card->uid_len = uid_len;
+    memcpy(out_card->uid, &resp[7], uid_len);
+    out_card->target_number = tg;
+    out_card->iso14443_4 = (out_card->sak & 0x20) != 0;
+
+    s_last_target_number = tg;
+    s_target_selected = true;
 
     return ESP_OK;
+}
+
+esp_err_t pn532_data_exchange(const uint8_t *apdu, size_t apdu_len,
+                               uint8_t *resp, size_t resp_cap, size_t *resp_len,
+                               uint32_t timeout_ms)
+{
+    if (!s_target_selected) return ESP_ERR_INVALID_STATE;
+
+    uint8_t params[300];
+    if (apdu_len + 1 > sizeof(params)) return ESP_ERR_INVALID_SIZE;
+    params[0] = s_last_target_number;
+    memcpy(&params[1], apdu, apdu_len);
+
+    uint8_t raw_resp[300];
+    size_t raw_len = 0;
+    esp_err_t err = pn532_command(PN532_CMD_IN_DATA_EXCHANGE, params, apdu_len + 1,
+                                   raw_resp, sizeof(raw_resp), &raw_len, timeout_ms);
+    if (err != ESP_OK) return err;
+    if (raw_len < 1) return ESP_ERR_INVALID_RESPONSE;
+
+    uint8_t status = raw_resp[0] & 0x3F;
+    if (status != 0x00) {
+        ESP_LOGW(TAG, "InDataExchange Statusfehler 0x%02X", status);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    size_t data_len = raw_len - 1;
+    if (data_len > resp_cap) data_len = resp_cap;
+    memcpy(resp, &raw_resp[1], data_len);
+    *resp_len = data_len;
+    return ESP_OK;
+}
+
+void pn532_release_field(void)
+{
+    if (!s_target_selected) return;
+
+    uint8_t params[] = {s_last_target_number};
+    uint8_t resp[8];
+    size_t resp_len = 0;
+    pn532_command(PN532_CMD_IN_RELEASE, params, sizeof(params), resp, sizeof(resp), &resp_len, 200);
+    s_target_selected = false;
 }
