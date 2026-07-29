@@ -11,3 +11,9 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # flash size 2MB").
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+
+# ESP-IDF-Default (512 Byte) reicht nicht fuer die Header, die moderne
+# Browser mitschicken (User-Agent, Accept-*, Sec-Fetch-*, Cookies, dazu der
+# Basic-Auth-Header der WebGUI) -- fuehrte zu "431 Request Header Fields Too
+# Large" schon beim blossen Aufrufen von http://<geraet-ip>/.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=4096

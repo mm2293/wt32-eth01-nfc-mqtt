@@ -527,6 +527,11 @@ esp_err_t web_config_start(void)
     config.stack_size = 6144;
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
+    // Der Default-Header-Puffer (CONFIG_HTTPD_MAX_REQ_HDR_LEN, siehe
+    // sdkconfig.defaults) ist mit 512 Byte zu klein fuer moderne Browser
+    // (User-Agent, Accept-*, Sec-Fetch-*, Cookies...) zusammen mit dem
+    // Basic-Auth-Header -- fuehrt sonst zu "431 Request Header Fields Too
+    // Large" schon beim simplen Seitenaufruf.
 
     httpd_handle_t server = NULL;
     esp_err_t err = httpd_start(&server, &config);
