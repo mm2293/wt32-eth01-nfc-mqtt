@@ -2,3 +2,20 @@ cd esp/esp-idf/wt32_firmware/
 idf.py build
 idf.py -p /dev/serial0 flash
 idf.py -p /dev/serial0 monitor
+
+## Konfiguration (Netzwerk/MQTT/Relais)
+
+Nach dem ersten Boot (Ethernet per DHCP, siehe serielles Log fuer die
+zugewiesene IP) ist unter `http://<geraet-ip>/` eine Mini-WebGUI erreichbar,
+ueber die sich folgende, bislang fest kodierte Werte aendern lassen:
+
+- Netzwerk: DHCP oder statische IP (inkl. Gateway/Subnetzmaske/DNS), Hostname
+- MQTT: Broker-URI, Benutzername/Passwort, Client-ID, alle 5 Topics (siehe
+  PROTOCOL.md)
+- Relais-Pulsdauer
+- Das Admin-Passwort der WebGUI selbst
+
+Login: Benutzername `admin`, Passwort initial `admin` (danach ueber die GUI
+aenderbar). Die Seite ist per HTTP Basic Auth geschuetzt -- nach dem
+Speichern startet das Geraet automatisch neu, damit Ethernet/MQTT mit den
+neuen Werten initialisiert werden.

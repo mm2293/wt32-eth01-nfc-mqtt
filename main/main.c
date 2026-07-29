@@ -23,12 +23,16 @@
 #include "pn532_uart.h"
 #include "relay_control.h"
 #include "mqtt_client_setup.h"
+#include "app_config.h"
+#include "web_config.h"
 
 static const char *TAG = "main";
 
-#define MQTT_BROKER_URI  "mqtt://10.60.16.71:1883"
-#define MQTT_USERNAME    "mqtt"
-#define MQTT_PASSWORD    "mqtt-2025!"
+// Netzwerk/MQTT/Relais-Parameter kommen jetzt zur Laufzeit aus NVS (siehe
+// app_config.h) statt aus Compile-Time-Konstanten -- ueber die Mini-WebGUI
+// (web_config.c, erreichbar unter http://<geraet-ip>/ sobald Ethernet eine
+// IP hat) aenderbar. Ein frisch geflashtes Geraet verhaelt sich dank der
+// Defaults in app_config_load() unveraendert wie vorher.
 
 // Die HomeKey reader_group_identifier kommt jetzt zur Laufzeit vom Addon
 // (retained MQTT-Topic nfc/homekey_group_id, siehe mqtt_client_setup.c),
@@ -177,15 +181,26 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(nvs_err);
 
-    ESP_ERROR_CHECK(ethernet_setup_init());
-    ESP_ERROR_CHECK(relay_control_init());
+    app_config_t cfg;
+    app_config_load(&cfg);
+
+    ESP_ERROR_CHECK(ethernet_setup_init(&cfg));
+    ESP_ERROR_CHECK(relay_control_init(cfg.relay_pulse_ms));
 
     ESP_LOGI(TAG, "Warte auf Ethernet-IP...");
     while (!ethernet_setup_has_ip()) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
-    esp_err_t mqtt_err = mqtt_client_setup_init(MQTT_BROKER_URI, MQTT_USERNAME, MQTT_PASSWORD);
+    esp_err_t web_err = web_config_start();
+    if (web_err != ESP_OK) {
+        ESP_LOGE(TAG, "Config-WebGUI konnte nicht gestartet werden (Fehler %d)", web_err);
+    }
+
+    esp_err_t mqtt_err = mqtt_client_setup_init(cfg.mqtt_broker_uri, cfg.mqtt_username, cfg.mqtt_password,
+                                                 cfg.mqtt_client_id,
+                                                 cfg.topic_raw, cfg.topic_apdu_cmd, cfg.topic_apdu_resp,
+                                                 cfg.topic_result, cfg.topic_homekey_group_id);
     if (mqtt_err != ESP_OK) {
         ESP_LOGE(TAG, "MQTT-Client konnte nicht gestartet werden (Fehler %d)", mqtt_err);
     }

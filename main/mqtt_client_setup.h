@@ -16,7 +16,16 @@ typedef struct {
     size_t apdu_len;
 } mqtt_apdu_cmd_t;
 
-esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, const char *password);
+/* topic_raw/apdu_cmd/apdu_resp/result/homekey_group_id: MQTT-Topic-Namen,
+ * siehe PROTOCOL.md -- ueber die WebGUI (web_config.c) konfigurierbar statt
+ * fest kodiert. client_id darf NULL/leer sein (dann generiert esp-mqtt
+ * automatisch eine). Die uebergebenen Strings werden nur fuer den Aufbau der
+ * Konfiguration benoetigt, esp_mqtt_client_init() kopiert sie intern. */
+esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, const char *password,
+                                  const char *client_id,
+                                  const char *topic_raw, const char *topic_apdu_cmd,
+                                  const char *topic_apdu_resp, const char *topic_result,
+                                  const char *topic_homekey_group_id);
 
 /* Meldet eine neu erkannte Karte. session_id identifiziert diesen
  * Kartenvorgang eindeutig gegenueber dem Addon (siehe nfc/apdu_cmd /

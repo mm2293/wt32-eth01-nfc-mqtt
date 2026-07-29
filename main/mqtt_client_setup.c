@@ -35,11 +35,15 @@
 
 static const char *TAG = "mqtt_client_setup";
 
-#define TOPIC_INCOMING_RESULT     "nfc/result"
-#define TOPIC_OUTGOING_RAW        "nfc/raw"
-#define TOPIC_INCOMING_APDU_CMD   "nfc/apdu_cmd"
-#define TOPIC_OUTGOING_APDU_RESP  "nfc/apdu_resp"
-#define TOPIC_INCOMING_HOMEKEY_GROUP_ID "nfc/homekey_group_id"
+#define TOPIC_LEN 64
+
+// Zur Laufzeit aus app_config_t befuellt (siehe mqtt_client_setup_init()),
+// vormals feste Compile-Time-Makros -- jetzt ueber die WebGUI konfigurierbar.
+static char s_topic_incoming_result[TOPIC_LEN];
+static char s_topic_outgoing_raw[TOPIC_LEN];
+static char s_topic_incoming_apdu_cmd[TOPIC_LEN];
+static char s_topic_outgoing_apdu_resp[TOPIC_LEN];
+static char s_topic_incoming_homekey_group_id[TOPIC_LEN];
 
 static esp_mqtt_client_handle_t s_mqtt_client = NULL;
 static QueueHandle_t s_session_queue = NULL;
@@ -182,8 +186,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
     switch ((esp_mqtt_event_id_t)event_id) {
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT verbunden, abonniere %s, %s und %s",
-                     TOPIC_INCOMING_RESULT, TOPIC_INCOMING_APDU_CMD, TOPIC_INCOMING_HOMEKEY_GROUP_ID);
-            esp_mqtt_client_subscribe(s_mqtt_client, TOPIC_INCOMING_RESULT, 1);
+                     s_topic_incoming_result, s_topic_incoming_apdu_cmd, s_topic_incoming_homekey_group_id);
+            esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_result, 1);
             // QoS 0 bewusst: nfc/apdu_cmd wird pro Kartenvorgang mehrfach
             // (einmal je APDU) durchgereicht, oft innerhalb eines engen
             // Zeitfensters, das Karte/Handy fuer die laufende NFC-Transaktion
@@ -192,10 +196,10 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
             // nichts bringt, da ein verlorenes APDU ohnehin ueber das eigene
             // Timeout auf Addon-Seite (mqtt_bridge.py) erkannt wird, nicht
             // durch MQTT-Zustellgarantien.
-            esp_mqtt_client_subscribe(s_mqtt_client, TOPIC_INCOMING_APDU_CMD, 0);
+            esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_apdu_cmd, 0);
             // Retained: liefert beim (Wieder-)Verbinden sofort den zuletzt vom
             // Addon veroeffentlichten Wert nach, auch nach einem ESP32-Reboot.
-            esp_mqtt_client_subscribe(s_mqtt_client, TOPIC_INCOMING_HOMEKEY_GROUP_ID, 1);
+            esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_homekey_group_id, 1);
             break;
 
         case MQTT_EVENT_DISCONNECTED:
@@ -223,12 +227,12 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
             int topic_copy_len = event->topic_len < (int)sizeof(topic) - 1 ? event->topic_len : (int)sizeof(topic) - 1;
             memcpy(topic, event->topic, topic_copy_len);
 
-            if (strcmp(topic, TOPIC_INCOMING_RESULT) == 0) {
+            if (strcmp(topic, s_topic_incoming_result) == 0) {
                 ESP_LOGI(TAG, "Ergebnis empfangen: %s", payload);
                 handle_result_message(payload);
-            } else if (strcmp(topic, TOPIC_INCOMING_APDU_CMD) == 0) {
+            } else if (strcmp(topic, s_topic_incoming_apdu_cmd) == 0) {
                 handle_apdu_cmd_message(payload);
-            } else if (strcmp(topic, TOPIC_INCOMING_HOMEKEY_GROUP_ID) == 0) {
+            } else if (strcmp(topic, s_topic_incoming_homekey_group_id) == 0) {
                 handle_homekey_group_id_message(payload);
             }
             free(payload);
@@ -240,9 +244,19 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
     }
 }
 
-esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, const char *password)
+esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, const char *password,
+                                  const char *client_id,
+                                  const char *topic_raw, const char *topic_apdu_cmd,
+                                  const char *topic_apdu_resp, const char *topic_result,
+                                  const char *topic_homekey_group_id)
 {
     s_session_queue = xQueueCreate(8, sizeof(session_queue_item_t));
+
+    strncpy(s_topic_outgoing_raw, topic_raw, TOPIC_LEN - 1);
+    strncpy(s_topic_incoming_apdu_cmd, topic_apdu_cmd, TOPIC_LEN - 1);
+    strncpy(s_topic_outgoing_apdu_resp, topic_apdu_resp, TOPIC_LEN - 1);
+    strncpy(s_topic_incoming_result, topic_result, TOPIC_LEN - 1);
+    strncpy(s_topic_incoming_homekey_group_id, topic_homekey_group_id, TOPIC_LEN - 1);
 
     // Default-Puffergroesse von esp-mqtt (1024 Byte) reicht seit
     // MQTT_APDU_MAX_LEN=2048 nicht mehr fuer ein hex-kodiertes apdu_cmd/
@@ -254,6 +268,7 @@ esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, c
         .broker.address.uri = broker_uri,
         .credentials.username = username,
         .credentials.authentication.password = password,
+        .credentials.client_id = (client_id != NULL && client_id[0] != '\0') ? client_id : NULL,
         .buffer.size = mqtt_buffer_size,
         .buffer.out_size = mqtt_buffer_size,
     };
@@ -293,7 +308,7 @@ void mqtt_client_setup_publish_card(const uint8_t *uid, uint8_t uid_len, uint8_t
     char *payload = cJSON_PrintUnformatted(json);
     ESP_LOGI(TAG, "Sende Kartendaten: %s", payload);
 
-    esp_mqtt_client_publish(s_mqtt_client, TOPIC_OUTGOING_RAW, payload, 0, 1, 0);
+    esp_mqtt_client_publish(s_mqtt_client, s_topic_outgoing_raw, payload, 0, 1, 0);
 
     free(payload);
     cJSON_Delete(json);
@@ -324,7 +339,7 @@ void mqtt_client_setup_publish_apdu_response(uint32_t session_id, bool ok,
     }
 
     char *payload = cJSON_PrintUnformatted(json);
-    esp_mqtt_client_publish(s_mqtt_client, TOPIC_OUTGOING_APDU_RESP, payload, 0, 0, 0);  // QoS 0, siehe Kommentar bei der Subscription
+    esp_mqtt_client_publish(s_mqtt_client, s_topic_outgoing_apdu_resp, payload, 0, 0, 0);  // QoS 0, siehe Kommentar bei der Subscription
     free(payload);
     cJSON_Delete(json);
 }
