@@ -3,3 +3,11 @@
 # mit nur einer "factory"-Partition.
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Per esptool.py flash_id verifizierte tatsaechliche Chip-Flash-Groesse
+# (Manufacturer 68 / Device 4017 = 8MB) -- vorher stand hier per ESP-IDF-
+# Default 2MB, wodurch partitions.csv (~3.4MB Partitionstabelle) nicht
+# passte ("Partitions tables occupies 3.1MB ... does not fit in configured
+# flash size 2MB").
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
