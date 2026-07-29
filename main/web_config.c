@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_system.h"
+#include "esp_ota_ops.h"
 #include "mbedtls/base64.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -16,6 +17,7 @@
 static const char *TAG = "web_config";
 
 #define FORM_BUF_SIZE 2048
+#define OTA_RECV_BUF_SIZE 4096
 
 // -------------------- HTTP Basic Auth --------------------
 
@@ -174,10 +176,28 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     html_escape(cfg.topic_relay_pulse_ms, e_t_relay_ms, sizeof(e_t_relay_ms));
     html_escape(cfg.admin_password, e_admin_pass, sizeof(e_admin_pass));
 
+    // Diagnose-Info fuer das OTA-Fieldset: aktuell laufende Partition und ob
+    // ueberhaupt eine zweite OTA-Partition (siehe partitions.csv) vorhanden
+    // ist. Ohne Custom-Partitionstabelle liefert esp_ota_get_next_update_partition()
+    // NULL -- der Upload wuerde dann serverseitig mit klarer Fehlermeldung
+    // abgelehnt, das wird hier schon vorab sichtbar gemacht.
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *next_update = esp_ota_get_next_update_partition(NULL);
+    char ota_info[192];
+    if (next_update != NULL) {
+        snprintf(ota_info, sizeof(ota_info),
+                 "Laeuft aktuell von Partition <code>%s</code>. Naechstes Update geht nach <code>%s</code>.",
+                 running != NULL ? running->label : "?", next_update->label);
+    } else {
+        snprintf(ota_info, sizeof(ota_info),
+                 "Keine zweite OTA-Partition gefunden -- Custom-Partitionstabelle "
+                 "(partitions.csv, siehe README) noetig, danach einmalig neu flashen.");
+    }
+
     // Ein einzelner malloc-Puffer fuer die zusammengesetzte Seite --
     // deutlich einfacher als httpd_resp_sendstr_chunk-Ketten, und der Server
     // laeuft ohnehin nur auf Menschen-Anfrage, nicht im NFC-Hotpath.
-    size_t html_cap = 8192;
+    size_t html_cap = 10240;
     char *html = malloc(html_cap);
     if (html == NULL) {
         httpd_resp_send_500(req);
@@ -246,6 +266,14 @@ static esp_err_t index_get_handler(httpd_req_t *req)
 
         "<button type=\"submit\">Speichern &amp; Neustarten</button>"
         "</form>"
+
+        "<fieldset><legend>Firmware-Update (OTA)</legend>"
+        "<p style=\"font-size:.85em;color:#555\">%s</p>"
+        "<label>Firmware-Datei (.bin)<input type=\"file\" id=\"otaFile\" accept=\".bin\"></label>"
+        "<button type=\"button\" onclick=\"uploadOta()\">Hochladen &amp; Neustarten</button>"
+        "<p id=\"otaStatus\"></p>"
+        "</fieldset>"
+
         "<script>"
         "function toggleStatic(cb){document.getElementById('staticFields').style.display=cb.checked?'none':'block';}"
         "toggleStatic(document.querySelector('input[name=dhcp]'));"
@@ -254,9 +282,22 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "document.getElementById('relayMqttField').style.display=cb.checked?'block':'none';"
         "}"
         "toggleRelaySource(document.querySelector('input[name=relay_mqtt]'));"
+        "async function uploadOta(){"
+        "var f=document.getElementById('otaFile').files[0];"
+        "var s=document.getElementById('otaStatus');"
+        "if(!f){s.textContent='Bitte zuerst eine .bin-Datei auswaehlen.';return;}"
+        "if(!confirm('Firmware \\''+f.name+'\\' ('+f.size+' Byte) wirklich aufspielen? Das Geraet startet danach neu.'))return;"
+        "s.textContent='Lade hoch...';"
+        "try{"
+        "var r=await fetch('/ota',{method:'POST',body:f});"
+        "var t=await r.text();"
+        "s.textContent=t;"
+        "}catch(e){s.textContent='Upload fehlgeschlagen: '+e;}"
+        "}"
         "</script>"
         "</body></html>",
-        cfg.relay_pulse_via_mqtt ? "checked" : "", cfg.relay_pulse_ms, e_t_relay_ms, e_admin_pass);
+        cfg.relay_pulse_via_mqtt ? "checked" : "", cfg.relay_pulse_ms, e_t_relay_ms, e_admin_pass,
+        ota_info);
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
@@ -361,6 +402,119 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// -------------------- POST /ota : Firmware-Update --------------------
+
+// Sendet eine einfache Textantwort mit gegebenem HTTP-Status -- fuer
+// Fehlerfaelle waehrend des OTA-Uploads, wo httpd_resp_send_err() aus
+// esp_http_server nicht alle hier vorkommenden Faelle abdeckt (custom
+// Statuscodes/Texte).
+static void ota_send_status(httpd_req_t *req, const char *status, const char *msg)
+{
+    httpd_resp_set_status(req, status);
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_send(req, msg, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t ota_post_handler(httpd_req_t *req)
+{
+    if (require_auth(req) != ESP_OK) return ESP_OK;
+
+    if (req->content_len == 0) {
+        ota_send_status(req, "400 Bad Request", "Keine Firmware-Datei empfangen");
+        return ESP_FAIL;
+    }
+
+    // NULL: naechste freie OTA-Partition ausser der gerade laufenden --
+    // schlaegt fehl (liefert NULL), wenn das Projekt (noch) keine
+    // Custom-Partitionstabelle mit zwei App-Slots verwendet (siehe
+    // partitions.csv/README).
+    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+    if (update_partition == NULL) {
+        ESP_LOGE(TAG, "Keine OTA-Partition gefunden -- partitions.csv (siehe README) konfiguriert?");
+        ota_send_status(req, "500 Internal Server Error",
+                        "Keine OTA-Partition gefunden. Custom-Partitionstabelle "
+                        "(partitions.csv, siehe README) konfiguriert und neu geflasht?");
+        return ESP_FAIL;
+    }
+
+    if (req->content_len > update_partition->size) {
+        ESP_LOGE(TAG, "Firmware-Datei (%zu Byte) groesser als OTA-Partition (%" PRIu32 " Byte)",
+                 req->content_len, update_partition->size);
+        ota_send_status(req, "400 Bad Request", "Firmware-Datei ist groesser als die verfuegbare OTA-Partition");
+        return ESP_FAIL;
+    }
+
+    esp_ota_handle_t ota_handle;
+    esp_err_t err = esp_ota_begin(update_partition, req->content_len, &ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_begin fehlgeschlagen: %s", esp_err_to_name(err));
+        ota_send_status(req, "500 Internal Server Error", "esp_ota_begin fehlgeschlagen");
+        return ESP_FAIL;
+    }
+
+    char *buf = malloc(OTA_RECV_BUF_SIZE);
+    if (buf == NULL) {
+        esp_ota_abort(ota_handle);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    int remaining = req->content_len;
+    ESP_LOGI(TAG, "OTA-Upload gestartet: %d Byte -> Partition %s", remaining, update_partition->label);
+
+    while (remaining > 0) {
+        int to_read = remaining < OTA_RECV_BUF_SIZE ? remaining : OTA_RECV_BUF_SIZE;
+        int r = httpd_req_recv(req, buf, to_read);
+        if (r <= 0) {
+            free(buf);
+            esp_ota_abort(ota_handle);
+            if (r == HTTPD_SOCK_ERR_TIMEOUT) {
+                httpd_resp_send_408(req);
+            } else {
+                ota_send_status(req, "400 Bad Request", "Upload abgebrochen/Verbindungsfehler");
+            }
+            return ESP_FAIL;
+        }
+
+        err = esp_ota_write(ota_handle, buf, r);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_ota_write fehlgeschlagen: %s", esp_err_to_name(err));
+            free(buf);
+            esp_ota_abort(ota_handle);
+            ota_send_status(req, "500 Internal Server Error", "esp_ota_write fehlgeschlagen");
+            return ESP_FAIL;
+        }
+
+        remaining -= r;
+    }
+    free(buf);
+
+    err = esp_ota_end(ota_handle);
+    if (err != ESP_OK) {
+        // Haeufigste Ursache: ESP_ERR_OTA_VALIDATE_FAILED -- Datei war keine
+        // gueltige, fuer diesen Chip gebaute App-Image (falsche Datei
+        // hochgeladen, oder Secure-Boot/Signaturpruefung schlaegt fehl).
+        ESP_LOGE(TAG, "esp_ota_end fehlgeschlagen: %s", esp_err_to_name(err));
+        ota_send_status(req, "400 Bad Request", "Ungueltiges Firmware-Image (esp_ota_end fehlgeschlagen)");
+        return ESP_FAIL;
+    }
+
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_set_boot_partition fehlgeschlagen: %s", esp_err_to_name(err));
+        ota_send_status(req, "500 Internal Server Error", "esp_ota_set_boot_partition fehlgeschlagen");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "OTA-Update erfolgreich, starte in Kuerze neu...");
+    ota_send_status(req, "200 OK", "Firmware-Update erfolgreich. Das Geraet startet jetzt neu...");
+
+    // Siehe Kommentar in save_post_handler() -- gleicher Grund.
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return ESP_OK;
+}
+
 // -------------------- Server-Start --------------------
 
 esp_err_t web_config_start(void)
@@ -394,6 +548,13 @@ esp_err_t web_config_start(void)
         .handler = save_post_handler,
     };
     httpd_register_uri_handler(server, &save_uri);
+
+    httpd_uri_t ota_uri = {
+        .uri = "/ota",
+        .method = HTTP_POST,
+        .handler = ota_post_handler,
+    };
+    httpd_register_uri_handler(server, &ota_uri);
 
     ESP_LOGI(TAG, "Config-WebGUI gestartet auf Port %d", config.server_port);
     return ESP_OK;

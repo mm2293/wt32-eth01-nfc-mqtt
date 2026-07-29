@@ -21,3 +21,35 @@ Login: Benutzername `admin`, Passwort initial `admin` (danach ueber die GUI
 aenderbar). Die Seite ist per HTTP Basic Auth geschuetzt -- nach dem
 Speichern startet das Geraet automatisch neu, damit Ethernet/MQTT mit den
 neuen Werten initialisiert werden.
+
+## Firmware-Update (OTA) ueber die WebGUI
+
+Im Fieldset "Firmware-Update (OTA)" laesst sich eine neue `.bin`-Firmware
+direkt hochladen -- die Firmware schreibt sie per `esp_ota_write()` in die
+jeweils inaktive App-Partition, prueft sie und startet danach automatisch in
+die neue Version.
+
+**Einmalige Voraussetzung:** Das Projekt braucht dafuer zwei App-Partitionen
+statt der einen `factory`-Partition. Dieses Repo liefert dafuer
+`partitions.csv` (Layout: `nvs`/`otadata`/`phy_init` + `ota_0`/`ota_1` je
+1.5MB, passend fuer 4MB-Flash) -- Einbindung:
+
+```
+idf.py menuconfig
+# -> Partition Table -> Partition Table -> "Custom partition table CSV"
+# -> Custom partition CSV file: partitions.csv (Pfad zu dieser Datei im Projekt)
+```
+
+(Alternativ `CONFIG_PARTITION_TABLE_CUSTOM=y` und
+`CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"` in
+`sdkconfig.defaults` setzen.)
+
+Da sich dabei die Flash-Offsets aendern, ist **einmalig** ein vollstaendiges
+`idf.py fullclean build flash` (kein reines OTA-Update) noetig, danach steht
+das Firmware-Update-Fieldset auf der Konfigurationsseite zur Verfuegung --
+ohne diese Umstellung meldet der Upload "Keine OTA-Partition gefunden".
+
+**Sicherheitshinweis:** Ein Firmware-Upload entspricht Codeausfuehrung auf
+dem Geraet -- der Zugriff ist wie der Rest der WebGUI nur per Basic-Auth
+geschuetzt. Das Admin-Passwort sollte entsprechend nicht auf dem
+Werkspasswort belassen werden.

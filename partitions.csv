@@ -1,0 +1,13 @@
+# WT32-ETH01 NFC-Gateway: Custom-Partitionstabelle mit zwei OTA-App-Slots
+# (fuer das Firmware-Update ueber die WebGUI, siehe web_config.c:ota_post_handler()).
+# Ersetzt die vorherige einzelne "factory"-Partition -- dafuer MUSS dieses
+# CSV als Custom-Partitionstabelle im Projekt eingebunden werden, siehe
+# README ("Firmware-Update (OTA)"). Layout/Groessen orientiert an ESP-IDFs
+# Standard-"two_ota"-Beispieltabelle, angepasst an 4MB-Flash (WT32-ETH01).
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x6000,
+otadata,    data, ota,      0xf000,   0x2000,
+phy_init,   data, phy,      0x11000,  0x1000,
+ota_0,      app,  ota_0,    0x20000,  0x180000,
+ota_1,      app,  ota_1,    0x1a0000, 0x180000,

@@ -3,5 +3,5 @@ idf_component_register(
          "app_config.c" "web_config.c"
     INCLUDE_DIRS "."
     REQUIRES esp_eth esp_netif driver mqtt json nvs_flash esp_event esp_timer
-             esp_http_server mbedtls lwip
+             esp_http_server mbedtls lwip app_update esp_partition
 )
