@@ -32,22 +32,30 @@ die neue Version.
 **Einmalige Voraussetzung:** Das Projekt braucht dafuer zwei App-Partitionen
 statt der einen `factory`-Partition. Dieses Repo liefert dafuer
 `partitions.csv` (Layout: `nvs`/`otadata`/`phy_init` + `ota_0`/`ota_1` je
-1.5MB, passend fuer 4MB-Flash) -- Einbindung:
+1.5MB, passend fuer 4MB-Flash) UND `sdkconfig.defaults` mit den noetigen
+zwei Zeilen (`CONFIG_PARTITION_TABLE_CUSTOM=y` /
+`CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"`), sodass
+`idf.py build` die Umstellung von selbst vornimmt -- **aber nur, solange noch
+keine `sdkconfig`-Datei im Projekt existiert** (`sdkconfig.defaults` wird nur
+beim erstmaligen Erzeugen der `sdkconfig` eingelesen, eine bereits
+bestehende `sdkconfig` hat immer Vorrang und wird dadurch nicht
+nachtraeglich veraendert).
 
-```
-idf.py menuconfig
-# -> Partition Table -> Partition Table -> "Custom partition table CSV"
-# -> Custom partition CSV file: partitions.csv (Pfad zu dieser Datei im Projekt)
-```
+Bei einem bereits laufenden Projekt (bestehende `sdkconfig` von vorherigen
+Builds) reicht deshalb keine reine Codeaenderung -- einmalig eine der beiden
+Optionen:
 
-(Alternativ `CONFIG_PARTITION_TABLE_CUSTOM=y` und
-`CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"` in
-`sdkconfig.defaults` setzen.)
+- Die bestehende `sdkconfig`-Datei loeschen (dann greift `sdkconfig.defaults`
+  beim naechsten `idf.py build` automatisch), oder
+- Die zwei Zeilen aus `sdkconfig.defaults` direkt in die bestehende
+  `sdkconfig` eintragen/aendern (ganz normale Textdatei, kein menuconfig
+  noetig).
 
-Da sich dabei die Flash-Offsets aendern, ist **einmalig** ein vollstaendiges
-`idf.py fullclean build flash` (kein reines OTA-Update) noetig, danach steht
-das Firmware-Update-Fieldset auf der Konfigurationsseite zur Verfuegung --
-ohne diese Umstellung meldet der Upload "Keine OTA-Partition gefunden".
+Da sich dabei die Flash-Offsets aendern, ist danach **einmalig** ein
+vollstaendiges `idf.py fullclean build flash` (kein reines OTA-Update)
+noetig, erst danach steht das Firmware-Update-Fieldset auf der
+Konfigurationsseite zur Verfuegung -- ohne diese Umstellung meldet der
+Upload "Keine OTA-Partition gefunden".
 
 **Sicherheitshinweis:** Ein Firmware-Upload entspricht Codeausfuehrung auf
 dem Geraet -- der Zugriff ist wie der Rest der WebGUI nur per Basic-Auth

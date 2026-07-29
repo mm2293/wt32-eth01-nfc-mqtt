@@ -1,0 +1,5 @@
+# Custom-Partitionstabelle mit zwei OTA-App-Slots (siehe partitions.csv,
+# README "Firmware-Update (OTA)") statt der ESP-IDF-Standard-Partitionstabelle
+# mit nur einer "factory"-Partition.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
