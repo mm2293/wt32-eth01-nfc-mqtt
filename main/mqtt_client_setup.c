@@ -44,6 +44,8 @@ static char s_topic_outgoing_raw[TOPIC_LEN];
 static char s_topic_incoming_apdu_cmd[TOPIC_LEN];
 static char s_topic_outgoing_apdu_resp[TOPIC_LEN];
 static char s_topic_incoming_homekey_group_id[TOPIC_LEN];
+static char s_topic_incoming_relay_pulse_ms[TOPIC_LEN];
+static bool s_relay_pulse_via_mqtt = false;
 
 static esp_mqtt_client_handle_t s_mqtt_client = NULL;
 static QueueHandle_t s_session_queue = NULL;
@@ -140,6 +142,17 @@ static void handle_homekey_group_id_message(const char *payload)
     ESP_LOGI(TAG, "HomeKey reader_group_identifier aktualisiert: %s", payload);
 }
 
+static void handle_relay_pulse_ms_message(const char *payload)
+{
+    char *endptr = NULL;
+    long ms = strtol(payload, &endptr, 10);
+    if (endptr == payload || ms < 50 || ms > 10000) {
+        ESP_LOGW(TAG, "relay_pulse_ms mit ungueltigem Wert ignoriert: %s", payload);
+        return;
+    }
+    relay_control_set_pulse_ms((uint32_t)ms);
+}
+
 static void handle_result_message(const char *payload)
 {
     cJSON *json = cJSON_Parse(payload);
@@ -200,6 +213,10 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
             // Retained: liefert beim (Wieder-)Verbinden sofort den zuletzt vom
             // Addon veroeffentlichten Wert nach, auch nach einem ESP32-Reboot.
             esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_homekey_group_id, 1);
+            if (s_relay_pulse_via_mqtt) {
+                ESP_LOGI(TAG, "Abonniere zusaetzlich %s (Relais-Pulsdauer)", s_topic_incoming_relay_pulse_ms);
+                esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_relay_pulse_ms, 1);
+            }
             break;
 
         case MQTT_EVENT_DISCONNECTED:
@@ -234,6 +251,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
                 handle_apdu_cmd_message(payload);
             } else if (strcmp(topic, s_topic_incoming_homekey_group_id) == 0) {
                 handle_homekey_group_id_message(payload);
+            } else if (s_relay_pulse_via_mqtt && strcmp(topic, s_topic_incoming_relay_pulse_ms) == 0) {
+                handle_relay_pulse_ms_message(payload);
             }
             free(payload);
             break;
@@ -248,7 +267,8 @@ esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, c
                                   const char *client_id,
                                   const char *topic_raw, const char *topic_apdu_cmd,
                                   const char *topic_apdu_resp, const char *topic_result,
-                                  const char *topic_homekey_group_id)
+                                  const char *topic_homekey_group_id,
+                                  bool relay_pulse_via_mqtt, const char *topic_relay_pulse_ms)
 {
     s_session_queue = xQueueCreate(8, sizeof(session_queue_item_t));
 
@@ -257,6 +277,8 @@ esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, c
     strncpy(s_topic_outgoing_apdu_resp, topic_apdu_resp, TOPIC_LEN - 1);
     strncpy(s_topic_incoming_result, topic_result, TOPIC_LEN - 1);
     strncpy(s_topic_incoming_homekey_group_id, topic_homekey_group_id, TOPIC_LEN - 1);
+    s_relay_pulse_via_mqtt = relay_pulse_via_mqtt;
+    strncpy(s_topic_incoming_relay_pulse_ms, topic_relay_pulse_ms, TOPIC_LEN - 1);
 
     // Default-Puffergroesse von esp-mqtt (1024 Byte) reicht seit
     // MQTT_APDU_MAX_LEN=2048 nicht mehr fuer ein hex-kodiertes apdu_cmd/

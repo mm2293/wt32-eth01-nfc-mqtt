@@ -39,6 +39,12 @@ typedef struct {
 
     // Relais
     uint32_t relay_pulse_ms;
+    // true: Pulsdauer kommt zur Laufzeit per MQTT (topic_relay_pulse_ms,
+    // retained, Payload = Millisekunden als Zahl-String), relay_pulse_ms
+    // dient dabei nur als Fallback bis zur ersten empfangenen Nachricht.
+    // false: relay_pulse_ms wird fest verwendet (Standardverhalten).
+    bool     relay_pulse_via_mqtt;
+    char     topic_relay_pulse_ms[APP_CFG_STR_LEN];
 
     // WebGUI-Login (HTTP Basic Auth, Benutzername fix "admin")
     char     admin_password[APP_CFG_STR_LEN];

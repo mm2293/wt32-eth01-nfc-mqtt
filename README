@@ -12,7 +12,9 @@ ueber die sich folgende, bislang fest kodierte Werte aendern lassen:
 - Netzwerk: DHCP oder statische IP (inkl. Gateway/Subnetzmaske/DNS), Hostname
 - MQTT: Broker-URI, Benutzername/Passwort, Client-ID, alle 5 Topics (siehe
   PROTOCOL.md)
-- Relais-Pulsdauer
+- Relais-Pulsdauer: entweder fest (ms-Feld) oder per MQTT-Topic vom Addon
+  gesetzt (Toggle "Pulsdauer per MQTT setzen", siehe PROTOCOL.md ->
+  `nfc/relay_pulse_ms`)
 - Das Admin-Passwort der WebGUI selbst
 
 Login: Benutzername `admin`, Passwort initial `admin` (danach ueber die GUI

@@ -200,7 +200,8 @@ void app_main(void)
     esp_err_t mqtt_err = mqtt_client_setup_init(cfg.mqtt_broker_uri, cfg.mqtt_username, cfg.mqtt_password,
                                                  cfg.mqtt_client_id,
                                                  cfg.topic_raw, cfg.topic_apdu_cmd, cfg.topic_apdu_resp,
-                                                 cfg.topic_result, cfg.topic_homekey_group_id);
+                                                 cfg.topic_result, cfg.topic_homekey_group_id,
+                                                 cfg.relay_pulse_via_mqtt, cfg.topic_relay_pulse_ms);
     if (mqtt_err != ESP_OK) {
         ESP_LOGE(TAG, "MQTT-Client konnte nicht gestartet werden (Fehler %d)", mqtt_err);
     }

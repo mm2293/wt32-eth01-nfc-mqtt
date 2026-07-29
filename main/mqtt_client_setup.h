@@ -20,12 +20,19 @@ typedef struct {
  * siehe PROTOCOL.md -- ueber die WebGUI (web_config.c) konfigurierbar statt
  * fest kodiert. client_id darf NULL/leer sein (dann generiert esp-mqtt
  * automatisch eine). Die uebergebenen Strings werden nur fuer den Aufbau der
- * Konfiguration benoetigt, esp_mqtt_client_init() kopiert sie intern. */
+ * Konfiguration benoetigt, esp_mqtt_client_init() kopiert sie intern.
+ *
+ * relay_pulse_via_mqtt: wenn true, wird zusaetzlich topic_relay_pulse_ms
+ * (retained, Payload = Millisekunden als Zahl-String) abonniert und jede
+ * empfangene Nachricht per relay_control_set_pulse_ms() uebernommen (siehe
+ * PROTOCOL.md). Wenn false, wird dieses Topic gar nicht erst abonniert und
+ * die feste, ueber die WebGUI konfigurierte Pulsdauer bleibt massgeblich. */
 esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, const char *password,
                                   const char *client_id,
                                   const char *topic_raw, const char *topic_apdu_cmd,
                                   const char *topic_apdu_resp, const char *topic_result,
-                                  const char *topic_homekey_group_id);
+                                  const char *topic_homekey_group_id,
+                                  bool relay_pulse_via_mqtt, const char *topic_relay_pulse_ms);
 
 /* Meldet eine neu erkannte Karte. session_id identifiziert diesen
  * Kartenvorgang eindeutig gegenueber dem Addon (siehe nfc/apdu_cmd /

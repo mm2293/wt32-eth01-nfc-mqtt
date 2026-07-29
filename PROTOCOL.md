@@ -77,6 +77,21 @@ kommt hier nichts an -- die Firmware sendet dann weiterhin `00...00` als
 Identifier (siehe `pn532_uart.c`), der Broadcast wird trotzdem gesendet, nur
 erkennt kein Geraet den Reader als "seinen".
 
+### `nfc/relay_pulse_ms` (Addon -> ESP32, retained, optional)
+
+```
+1500   (KEIN JSON -- reiner Zahl-String in Millisekunden als Payload, 50-10000)
+```
+
+Nur relevant, wenn ueber die WebGUI (siehe README) "Pulsdauer per MQTT
+setzen" aktiviert wurde -- dann abonniert die Firmware dieses Topic
+zusaetzlich und uebernimmt jeden gueltigen Wert sofort per
+`relay_control_set_pulse_ms()` (siehe `relay_control.c`), OHNE ihn in NVS zu
+persistieren. Werte ausserhalb 50-10000 oder nicht-numerische Payloads werden
+mit einer Log-Warnung ignoriert, der zuletzt gueltige Wert bleibt bestehen.
+Ist die Option deaktiviert (Standard), wird dieses Topic gar nicht erst
+abonniert und die feste, ueber die WebGUI konfigurierte Pulsdauer gilt.
+
 ### `nfc/result` (Addon -> ESP32, bereits vorhanden)
 
 Unveraendertes Format. Wird zusaetzlich als **Sessionende** interpretiert:

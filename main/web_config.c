@@ -154,6 +154,7 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     char e_uri[APP_CFG_STR_LEN * 2], e_user[APP_CFG_STR_LEN * 2], e_pass[APP_CFG_STR_LEN * 2], e_cid[APP_CFG_STR_LEN * 2];
     char e_t_raw[APP_CFG_STR_LEN * 2], e_t_cmd[APP_CFG_STR_LEN * 2], e_t_resp[APP_CFG_STR_LEN * 2];
     char e_t_result[APP_CFG_STR_LEN * 2], e_t_hk[APP_CFG_STR_LEN * 2];
+    char e_t_relay_ms[APP_CFG_STR_LEN * 2];
     char e_admin_pass[APP_CFG_STR_LEN * 2];
 
     html_escape(cfg.net_ip, e_ip, sizeof(e_ip));
@@ -170,6 +171,7 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     html_escape(cfg.topic_apdu_resp, e_t_resp, sizeof(e_t_resp));
     html_escape(cfg.topic_result, e_t_result, sizeof(e_t_result));
     html_escape(cfg.topic_homekey_group_id, e_t_hk, sizeof(e_t_hk));
+    html_escape(cfg.topic_relay_pulse_ms, e_t_relay_ms, sizeof(e_t_relay_ms));
     html_escape(cfg.admin_password, e_admin_pass, sizeof(e_admin_pass));
 
     // Ein einzelner malloc-Puffer fuer die zusammengesetzte Seite --
@@ -228,7 +230,14 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     used = strlen(html);
     snprintf(html + used, html_cap - used,
         "<fieldset><legend>Relais</legend>"
+        "<label><input type=\"checkbox\" name=\"relay_mqtt\" %s onclick=\"toggleRelaySource(this)\"> Pulsdauer per MQTT setzen (statt fest)</label>"
+        "<div id=\"relayFixedField\">"
         "<label>Pulsdauer (ms)<input type=\"number\" name=\"relay_ms\" value=\"%" PRIu32 "\" min=\"50\" max=\"10000\"></label>"
+        "</div>"
+        "<div id=\"relayMqttField\">"
+        "<label>Topic: Relais-Pulsdauer (Addon -&gt; ESP32, retained, Payload = ms als Zahl)"
+        "<input type=\"text\" name=\"t_relay_ms\" value=\"%s\"></label>"
+        "</div>"
         "</fieldset>"
 
         "<fieldset><legend>WebGUI-Login</legend>"
@@ -240,9 +249,14 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "<script>"
         "function toggleStatic(cb){document.getElementById('staticFields').style.display=cb.checked?'none':'block';}"
         "toggleStatic(document.querySelector('input[name=dhcp]'));"
+        "function toggleRelaySource(cb){"
+        "document.getElementById('relayFixedField').style.display=cb.checked?'none':'block';"
+        "document.getElementById('relayMqttField').style.display=cb.checked?'block':'none';"
+        "}"
+        "toggleRelaySource(document.querySelector('input[name=relay_mqtt]'));"
         "</script>"
         "</body></html>",
-        cfg.relay_pulse_ms, e_admin_pass);
+        cfg.relay_pulse_via_mqtt ? "checked" : "", cfg.relay_pulse_ms, e_t_relay_ms, e_admin_pass);
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
@@ -300,6 +314,12 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     form_get(body, "t_apdu_resp", cfg.topic_apdu_resp, sizeof(cfg.topic_apdu_resp));
     form_get(body, "t_result", cfg.topic_result, sizeof(cfg.topic_result));
     form_get(body, "t_homekey", cfg.topic_homekey_group_id, sizeof(cfg.topic_homekey_group_id));
+
+    cfg.relay_pulse_via_mqtt = form_get_bool(body, "relay_mqtt");
+    form_get(body, "t_relay_ms", cfg.topic_relay_pulse_ms, sizeof(cfg.topic_relay_pulse_ms));
+    if (cfg.topic_relay_pulse_ms[0] == '\0') {
+        strncpy(cfg.topic_relay_pulse_ms, "nfc/relay_pulse_ms", sizeof(cfg.topic_relay_pulse_ms) - 1);
+    }
 
     char relay_ms_str[16];
     form_get(body, "relay_ms", relay_ms_str, sizeof(relay_ms_str));
