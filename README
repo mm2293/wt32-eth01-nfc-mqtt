@@ -67,3 +67,18 @@ Upload "Keine OTA-Partition gefunden".
 dem Geraet -- der Zugriff ist wie der Rest der WebGUI nur per Basic-Auth
 geschuetzt. Das Admin-Passwort sollte entsprechend nicht auf dem
 Werkspasswort belassen werden.
+
+## MIFARE Classic: automatischer Default-Key-Scan
+
+Per `nfc/mifare_scan_cmd` (siehe PROTOCOL.md) laesst sich ein automatischer
+Scan ausloesen, der eine feste Liste gaengiger Default-Keys (identisch zu
+`mfoc`s eingebautem Dictionary) gegen Key A/Key B jedes Sektors testet --
+direkt auf dem ESP32, ohne MQTT-Rundlauf pro einzelnem Versuch. Ergebnis
+kommt als fertige Tabelle auf `nfc/mifare_scan_result`.
+
+Deckt nur den Dictionary-Teil ab ("ist die Karte noch auf Standard-Keys").
+Fuer Sektoren mit individuellen Keys (die nicht in der Liste stehen) bleibt
+ein externes Tool wie `mfoc` auf einem PC mit libnfc-kompatiblem Reader
+noetig -- ein echter Nested/Dark-Side-Cracking-Angriff ist auf dieser
+Hardware nicht moeglich, da der PN532 die MIFARE-Authentifizierung intern
+als Blackbox kapselt.

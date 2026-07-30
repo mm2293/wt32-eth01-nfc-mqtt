@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "mifare_classic_scan.h"
+
 // War 250 (ein einzelner PN532-Kurzframe): jetzt gross genug fuer per
 // InDataExchange-Fortsetzung ("more data"-Bit) zusammengesetzte Antworten
 // (z.B. HomeKey-ATTESTATION-Envelopes), siehe pn532_uart.c:pn532_data_exchange_once().
@@ -32,7 +34,8 @@ esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, c
                                   const char *topic_raw, const char *topic_apdu_cmd,
                                   const char *topic_apdu_resp, const char *topic_result,
                                   const char *topic_homekey_group_id,
-                                  bool relay_pulse_via_mqtt, const char *topic_relay_pulse_ms);
+                                  bool relay_pulse_via_mqtt, const char *topic_relay_pulse_ms,
+                                  const char *topic_mifare_scan_cmd, const char *topic_mifare_scan_result);
 
 /* Meldet eine neu erkannte Karte. session_id identifiziert diesen
  * Kartenvorgang eindeutig gegenueber dem Addon (siehe nfc/apdu_cmd /
@@ -46,13 +49,24 @@ void mqtt_client_setup_publish_apdu_response(uint32_t session_id, bool ok,
                                               const uint8_t *resp, size_t resp_len,
                                               const char *error);
 
-/* Blockiert bis zu timeout_ms auf das naechste APDU-Kommando ODER das
- * Sessionende (nfc/result) fuer die angegebene session_id; Nachrichten mit
- * abweichender session_id werden intern verworfen (nicht relevant, aber
- * verbrauchen nicht die volle Wartezeit erneut).
- * Rueckgabe true + out_cmd befuellt: naechstes APDU-Kommando.
+/* Blockiert bis zu timeout_ms auf das naechste APDU-Kommando, einen
+ * MIFARE-Scan-Trigger (nfc/mifare_scan_cmd) ODER das Sessionende
+ * (nfc/result) fuer die angegebene session_id; Nachrichten mit abweichender
+ * session_id werden intern verworfen (nicht relevant, aber verbrauchen nicht
+ * die volle Wartezeit erneut).
+ * Rueckgabe true + *out_is_mifare_scan=false + out_cmd befuellt: naechstes
+ *   APDU-Kommando.
+ * Rueckgabe true + *out_is_mifare_scan=true: MIFARE-Scan-Trigger empfangen,
+ *   out_cmd ist dabei NICHT befuellt (siehe mifare_classic_scan.h).
  * Rueckgabe false + *out_session_ended=true: nfc/result fuer diese Session
- * wurde empfangen (regulaeres Ende).
+ *   wurde empfangen (regulaeres Ende).
  * Rueckgabe false + *out_session_ended=false: Timeout ohne Nachricht. */
 bool mqtt_client_setup_wait_apdu_cmd(uint32_t session_id, mqtt_apdu_cmd_t *out_cmd,
-                                      bool *out_session_ended, uint32_t timeout_ms);
+                                      bool *out_session_ended, bool *out_is_mifare_scan,
+                                      uint32_t timeout_ms);
+
+/* Ergebnis eines per nfc/mifare_scan_cmd ausgeloesten Dictionary-Scans
+ * (siehe mifare_classic_scan.h), veroeffentlicht auf
+ * nfc/mifare_scan_result. */
+void mqtt_client_setup_publish_mifare_scan_result(uint32_t session_id,
+                                                   const mifare_scan_result_t *result);

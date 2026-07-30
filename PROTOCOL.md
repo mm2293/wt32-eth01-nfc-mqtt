@@ -92,6 +92,51 @@ mit einer Log-Warnung ignoriert, der zuletzt gueltige Wert bleibt bestehen.
 Ist die Option deaktiviert (Standard), wird dieses Topic gar nicht erst
 abonniert und die feste, ueber die WebGUI konfigurierte Pulsdauer gilt.
 
+### `nfc/mifare_scan_cmd` (Addon/NFC-Shell -> ESP32)
+
+```json
+{"session_id": 17}
+```
+
+Loest fuer die aktuell offene APDU-Relay-Session (siehe oben) einen
+automatischen MIFARE-Classic-Dictionary-Scan aus (siehe
+`mifare_classic_scan.c`): die Firmware testet eine feste Liste gaengiger
+Default-Keys (identisch zu `mfoc`s eingebautem Key-Dictionary) gegen Key A
+und Key B jedes Sektors -- per direktem PN532-Zugriff, ohne MQTT-Rundlauf
+pro einzelnem Versuch. Nur fuer MIFARE Classic sinnvoll (SAK ohne
+ISO14443-4-Bit, z.B. 0x08/0x18/0x09/0x28) -- bei einer ISO14443-4-Karte
+(DESFire/HomeKey) wird die Anfrage mit einer Log-Warnung ignoriert.
+
+Deckt NUR den Dictionary-Teil ab ("ist die Karte noch auf Standard-Keys").
+Ein echter Nested/Dark-Side-Cracking-Angriff wie bei `mfoc` fuer Sektoren
+mit individuellen (nicht in der Liste enthaltenen) Keys ist damit NICHT
+moeglich -- der PN532 kapselt die Crypto1-Authentifizierung intern als
+Blackbox und legt die dafuer noetigen rohen Zwischenzustaende nicht offen.
+Fuer solche Sektoren bleibt ein externes Tool wie `mfoc` (auf einem PC mit
+libnfc-kompatiblem Reader) noetig.
+
+Kann je nach Kartenzustand mehrere Sekunden bis niedrige Minuten dauern
+(Worst Case: kein Sektor auf einem Default-Key, dann werden alle
+Kombinationen durchprobiert) -- waehrenddessen ist die Firmware blockiert
+und verarbeitet keine weiteren Kommandos fuer diese Karte.
+
+### `nfc/mifare_scan_result` (ESP32 -> Addon)
+
+```json
+{
+  "session_id": 17,
+  "sector_count": 16,
+  "sectors": [
+    {"sector": 0, "key_a": null, "key_b": null},
+    {"sector": 1, "key_a": null, "key_b": null},
+    {"sector": 2, "key_a": "FFFFFFFFFFFF", "key_b": "FFFFFFFFFFFF"}
+  ]
+}
+```
+
+`key_a`/`key_b` sind `null`, wenn keiner der Default-Keys aus der
+Dictionary-Liste passte, sonst der gefundene Key als Hex-String.
+
 ### `nfc/result` (Addon -> ESP32, bereits vorhanden)
 
 Unveraendertes Format. Wird zusaetzlich als **Sessionende** interpretiert:

@@ -25,6 +25,7 @@
 #include "mqtt_client_setup.h"
 #include "app_config.h"
 #include "web_config.h"
+#include "mifare_classic_scan.h"
 
 static const char *TAG = "main";
 
@@ -98,13 +99,30 @@ static void card_event_task(void *pvParameters)
         while (1) {
             mqtt_apdu_cmd_t cmd;
             bool session_ended = false;
+            bool is_mifare_scan = false;
             int64_t t_wait_start_us = esp_timer_get_time();
-            if (!mqtt_client_setup_wait_apdu_cmd(session_id, &cmd, &session_ended, s_apdu_relay_timeout_ms)) {
+            if (!mqtt_client_setup_wait_apdu_cmd(session_id, &cmd, &session_ended, &is_mifare_scan,
+                                                  s_apdu_relay_timeout_ms)) {
                 if (!session_ended) {
                     ESP_LOGW(TAG, "Session %" PRIu32 ": Timeout, breche Kommando-Relay ab", session_id);
                 }
                 break;
             }
+
+            if (is_mifare_scan) {
+                if (card.iso14443_4) {
+                    ESP_LOGW(TAG, "Session %" PRIu32 ": MIFARE-Scan fuer ISO14443-4-Karte "
+                                  "(DESFire/HomeKey) ignoriert -- nur fuer MIFARE Classic sinnvoll",
+                             session_id);
+                    continue;
+                }
+                ESP_LOGI(TAG, "Session %" PRIu32 ": starte MIFARE-Classic-Dictionary-Scan...", session_id);
+                mifare_scan_result_t scan_result;
+                mifare_classic_scan_default_keys(card.uid, card.uid_len, card.sak, &scan_result);
+                mqtt_client_setup_publish_mifare_scan_result(session_id, &scan_result);
+                continue;
+            }
+
             apdu_index++;
             int64_t t_cmd_received_us = esp_timer_get_time();
             ESP_LOGI(TAG, "Session %" PRIu32 ": Kommando #%d empfangen (%lld ms seit Erkennung, "
@@ -209,7 +227,8 @@ void app_main(void)
                                                  cfg.mqtt_client_id,
                                                  cfg.topic_raw, cfg.topic_apdu_cmd, cfg.topic_apdu_resp,
                                                  cfg.topic_result, cfg.topic_homekey_group_id,
-                                                 cfg.relay_pulse_via_mqtt, cfg.topic_relay_pulse_ms);
+                                                 cfg.relay_pulse_via_mqtt, cfg.topic_relay_pulse_ms,
+                                                 cfg.topic_mifare_scan_cmd, cfg.topic_mifare_scan_result);
     if (mqtt_err != ESP_OK) {
         ESP_LOGE(TAG, "MQTT-Client konnte nicht gestartet werden (Fehler %d)", mqtt_err);
     }

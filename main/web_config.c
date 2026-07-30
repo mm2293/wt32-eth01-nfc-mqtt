@@ -157,6 +157,7 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     char e_t_raw[APP_CFG_STR_LEN * 2], e_t_cmd[APP_CFG_STR_LEN * 2], e_t_resp[APP_CFG_STR_LEN * 2];
     char e_t_result[APP_CFG_STR_LEN * 2], e_t_hk[APP_CFG_STR_LEN * 2];
     char e_t_relay_ms[APP_CFG_STR_LEN * 2];
+    char e_t_mf_scan_cmd[APP_CFG_STR_LEN * 2], e_t_mf_scan_result[APP_CFG_STR_LEN * 2];
     char e_admin_pass[APP_CFG_STR_LEN * 2];
 
     html_escape(cfg.net_ip, e_ip, sizeof(e_ip));
@@ -174,6 +175,8 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     html_escape(cfg.topic_result, e_t_result, sizeof(e_t_result));
     html_escape(cfg.topic_homekey_group_id, e_t_hk, sizeof(e_t_hk));
     html_escape(cfg.topic_relay_pulse_ms, e_t_relay_ms, sizeof(e_t_relay_ms));
+    html_escape(cfg.topic_mifare_scan_cmd, e_t_mf_scan_cmd, sizeof(e_t_mf_scan_cmd));
+    html_escape(cfg.topic_mifare_scan_result, e_t_mf_scan_result, sizeof(e_t_mf_scan_result));
     html_escape(cfg.admin_password, e_admin_pass, sizeof(e_admin_pass));
 
     // Diagnose-Info fuer das OTA-Fieldset: aktuell laufende Partition und ob
@@ -244,8 +247,11 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "<label>Topic: APDU-Antwort (ESP32 -&gt; Addon)<input type=\"text\" name=\"t_apdu_resp\" value=\"%s\"></label>"
         "<label>Topic: Ergebnis (Addon -&gt; ESP32)<input type=\"text\" name=\"t_result\" value=\"%s\"></label>"
         "<label>Topic: HomeKey Reader-Group-ID (Addon -&gt; ESP32)<input type=\"text\" name=\"t_homekey\" value=\"%s\"></label>"
+        "<label>Topic: MIFARE-Scan-Trigger (Addon -&gt; ESP32)<input type=\"text\" name=\"t_mf_scan_cmd\" value=\"%s\"></label>"
+        "<label>Topic: MIFARE-Scan-Ergebnis (ESP32 -&gt; Addon)<input type=\"text\" name=\"t_mf_scan_result\" value=\"%s\"></label>"
         "</fieldset>",
-        e_uri, e_user, e_pass, e_cid, e_t_raw, e_t_cmd, e_t_resp, e_t_result, e_t_hk);
+        e_uri, e_user, e_pass, e_cid, e_t_raw, e_t_cmd, e_t_resp, e_t_result, e_t_hk,
+        e_t_mf_scan_cmd, e_t_mf_scan_result);
 
     used = strlen(html);
     snprintf(html + used, html_cap - used,
@@ -367,6 +373,8 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     form_get(body, "t_apdu_resp", cfg.topic_apdu_resp, sizeof(cfg.topic_apdu_resp));
     form_get(body, "t_result", cfg.topic_result, sizeof(cfg.topic_result));
     form_get(body, "t_homekey", cfg.topic_homekey_group_id, sizeof(cfg.topic_homekey_group_id));
+    form_get(body, "t_mf_scan_cmd", cfg.topic_mifare_scan_cmd, sizeof(cfg.topic_mifare_scan_cmd));
+    form_get(body, "t_mf_scan_result", cfg.topic_mifare_scan_result, sizeof(cfg.topic_mifare_scan_result));
 
     char apdu_to_str[16];
     form_get(body, "apdu_to_ms", apdu_to_str, sizeof(apdu_to_str));

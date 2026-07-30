@@ -36,6 +36,11 @@ typedef struct {
     char     topic_apdu_resp[APP_CFG_STR_LEN];
     char     topic_result[APP_CFG_STR_LEN];
     char     topic_homekey_group_id[APP_CFG_STR_LEN];
+    // Siehe mifare_classic_scan.h -- Trigger (Addon/Shell -> ESP32) und
+    // Ergebnis (ESP32 -> Addon) fuer den automatischen MIFARE-Classic-
+    // Default-Key-Dictionary-Scan.
+    char     topic_mifare_scan_cmd[APP_CFG_STR_LEN];
+    char     topic_mifare_scan_result[APP_CFG_STR_LEN];
 
     // Relais
     uint32_t relay_pulse_ms;
