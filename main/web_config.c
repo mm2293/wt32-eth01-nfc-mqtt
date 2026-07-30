@@ -249,6 +249,18 @@ static esp_err_t index_get_handler(httpd_req_t *req)
 
     used = strlen(html);
     snprintf(html + used, html_cap - used,
+        "<fieldset><legend>NFC/APDU-Relay</legend>"
+        "<label>Timeout zwischen Kommandos (ms)<input type=\"number\" name=\"apdu_to_ms\" value=\"%" PRIu32 "\" min=\"500\" max=\"120000\"></label>"
+        "<p style=\"font-size:.85em;color:#555\">Wie lange die Karte nach dem letzten APDU-Kommando (bzw. seit "
+        "Erkennung) noch im Feld gehalten wird, bevor die Firmware aufgibt. Standard 3000ms passt fuer die "
+        "automatische Zutrittslogik (Kommandos folgen dort in Millisekunden). Fuer interaktive Tools wie die "
+        "NFC-Shell des Addons (Mensch tippt/klickt dazwischen) einen deutlich hoeheren Wert setzen, z.B. 30000-60000, "
+        "sonst wird die Karte freigegeben, bevor ueberhaupt ein Kommando abgeschickt wurde.</p>"
+        "</fieldset>",
+        cfg.apdu_relay_timeout_ms);
+
+    used = strlen(html);
+    snprintf(html + used, html_cap - used,
         "<fieldset><legend>Relais</legend>"
         "<label><input type=\"checkbox\" name=\"relay_mqtt\" %s onclick=\"toggleRelaySource(this)\"> Pulsdauer per MQTT setzen (statt fest)</label>"
         "<div id=\"relayFixedField\">"
@@ -355,6 +367,15 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     form_get(body, "t_apdu_resp", cfg.topic_apdu_resp, sizeof(cfg.topic_apdu_resp));
     form_get(body, "t_result", cfg.topic_result, sizeof(cfg.topic_result));
     form_get(body, "t_homekey", cfg.topic_homekey_group_id, sizeof(cfg.topic_homekey_group_id));
+
+    char apdu_to_str[16];
+    form_get(body, "apdu_to_ms", apdu_to_str, sizeof(apdu_to_str));
+    if (apdu_to_str[0] != '\0') {
+        long v = strtol(apdu_to_str, NULL, 10);
+        if (v >= 500 && v <= 120000) {
+            cfg.apdu_relay_timeout_ms = (uint32_t)v;
+        }
+    }
 
     cfg.relay_pulse_via_mqtt = form_get_bool(body, "relay_mqtt");
     form_get(body, "t_relay_ms", cfg.topic_relay_pulse_ms, sizeof(cfg.topic_relay_pulse_ms));

@@ -15,6 +15,12 @@ ueber die sich folgende, bislang fest kodierte Werte aendern lassen:
 - Relais-Pulsdauer: entweder fest (ms-Feld) oder per MQTT-Topic vom Addon
   gesetzt (Toggle "Pulsdauer per MQTT setzen", siehe PROTOCOL.md ->
   `nfc/relay_pulse_ms`)
+- NFC/APDU-Relay-Timeout: wie lange die Karte nach dem letzten APDU-Kommando
+  noch im Feld gehalten wird, bevor die Firmware aufgibt (Standard 3000ms,
+  passend fuer die schnelle Automatik-Zutrittslogik). Fuer interaktive
+  Debug-Tools wie die NFC-Shell des Addons (Mensch tippt/klickt dazwischen)
+  hier einen deutlich hoeheren Wert setzen (z.B. 30000-60000ms), sonst wird
+  die Karte freigegeben, bevor ueberhaupt ein Kommando abgeschickt wurde.
 - Das Admin-Passwort der WebGUI selbst
 
 Login: Benutzername `admin`, Passwort initial `admin` (danach ueber die GUI

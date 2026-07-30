@@ -41,6 +41,12 @@ static const char *TAG = "main";
 // trotzdem gesendet, nur antwortet dann kein Geraet mit einem gueltigen
 // Kryptogramm darauf.
 
+// Ueber die WebGUI konfigurierbar (app_config_t.apdu_relay_timeout_ms), in
+// app_main() aus der geladenen Konfiguration gesetzt, bevor card_event_task
+// gestartet wird -- siehe deren Verwendung unten in der Kommando-Relay-
+// Schleife.
+static uint32_t s_apdu_relay_timeout_ms = 3000;
+
 static void card_event_task(void *pvParameters)
 {
     static uint32_t s_session_counter = 0;
@@ -93,7 +99,7 @@ static void card_event_task(void *pvParameters)
             mqtt_apdu_cmd_t cmd;
             bool session_ended = false;
             int64_t t_wait_start_us = esp_timer_get_time();
-            if (!mqtt_client_setup_wait_apdu_cmd(session_id, &cmd, &session_ended, 3000)) {
+            if (!mqtt_client_setup_wait_apdu_cmd(session_id, &cmd, &session_ended, s_apdu_relay_timeout_ms)) {
                 if (!session_ended) {
                     ESP_LOGW(TAG, "Session %" PRIu32 ": Timeout, breche Kommando-Relay ab", session_id);
                 }
@@ -183,6 +189,8 @@ void app_main(void)
 
     app_config_t cfg;
     app_config_load(&cfg);
+
+    s_apdu_relay_timeout_ms = cfg.apdu_relay_timeout_ms;
 
     ESP_ERROR_CHECK(ethernet_setup_init(&cfg));
     ESP_ERROR_CHECK(relay_control_init(cfg.relay_pulse_ms));
