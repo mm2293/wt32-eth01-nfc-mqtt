@@ -18,11 +18,8 @@ static const char *NVS_NAMESPACE = "cfg";
 #define DEFAULT_TOPIC_APDU_RESP         "nfc/apdu_resp"
 #define DEFAULT_TOPIC_RESULT             "nfc/result"
 #define DEFAULT_TOPIC_HOMEKEY_GROUP_ID   "nfc/homekey_group_id"
-#define DEFAULT_TOPIC_MIFARE_SCAN_CMD    "nfc/mifare_scan_cmd"
-#define DEFAULT_TOPIC_MIFARE_SCAN_RESULT "nfc/mifare_scan_result"
 #define DEFAULT_RELAY_PULSE_MS   1500
 #define DEFAULT_TOPIC_RELAY_PULSE_MS     "nfc/relay_pulse_ms"
-#define DEFAULT_APDU_RELAY_TIMEOUT_MS 3000
 #define DEFAULT_HOSTNAME         "wt32-nfc-gateway"
 #define DEFAULT_ADMIN_PASSWORD   "admin"
 
@@ -55,12 +52,9 @@ esp_err_t app_config_load(app_config_t *cfg)
         strncpy(cfg->topic_apdu_resp, DEFAULT_TOPIC_APDU_RESP, sizeof(cfg->topic_apdu_resp) - 1);
         strncpy(cfg->topic_result, DEFAULT_TOPIC_RESULT, sizeof(cfg->topic_result) - 1);
         strncpy(cfg->topic_homekey_group_id, DEFAULT_TOPIC_HOMEKEY_GROUP_ID, sizeof(cfg->topic_homekey_group_id) - 1);
-        strncpy(cfg->topic_mifare_scan_cmd, DEFAULT_TOPIC_MIFARE_SCAN_CMD, sizeof(cfg->topic_mifare_scan_cmd) - 1);
-        strncpy(cfg->topic_mifare_scan_result, DEFAULT_TOPIC_MIFARE_SCAN_RESULT, sizeof(cfg->topic_mifare_scan_result) - 1);
         cfg->relay_pulse_ms = DEFAULT_RELAY_PULSE_MS;
         cfg->relay_pulse_via_mqtt = false;
         strncpy(cfg->topic_relay_pulse_ms, DEFAULT_TOPIC_RELAY_PULSE_MS, sizeof(cfg->topic_relay_pulse_ms) - 1);
-        cfg->apdu_relay_timeout_ms = DEFAULT_APDU_RELAY_TIMEOUT_MS;
         strncpy(cfg->admin_password, DEFAULT_ADMIN_PASSWORD, sizeof(cfg->admin_password) - 1);
         return ESP_OK;
     }
@@ -85,8 +79,6 @@ esp_err_t app_config_load(app_config_t *cfg)
     get_str(h, "t_apdu_resp", cfg->topic_apdu_resp, sizeof(cfg->topic_apdu_resp), DEFAULT_TOPIC_APDU_RESP);
     get_str(h, "t_result", cfg->topic_result, sizeof(cfg->topic_result), DEFAULT_TOPIC_RESULT);
     get_str(h, "t_homekey", cfg->topic_homekey_group_id, sizeof(cfg->topic_homekey_group_id), DEFAULT_TOPIC_HOMEKEY_GROUP_ID);
-    get_str(h, "t_mf_scan_c", cfg->topic_mifare_scan_cmd, sizeof(cfg->topic_mifare_scan_cmd), DEFAULT_TOPIC_MIFARE_SCAN_CMD);
-    get_str(h, "t_mf_scan_r", cfg->topic_mifare_scan_result, sizeof(cfg->topic_mifare_scan_result), DEFAULT_TOPIC_MIFARE_SCAN_RESULT);
 
     uint32_t pulse = DEFAULT_RELAY_PULSE_MS;
     nvs_get_u32(h, "relay_ms", &pulse);
@@ -96,10 +88,6 @@ esp_err_t app_config_load(app_config_t *cfg)
     nvs_get_u8(h, "relay_mqtt", &relay_mqtt_u8);
     cfg->relay_pulse_via_mqtt = relay_mqtt_u8 != 0;
     get_str(h, "t_relay_ms", cfg->topic_relay_pulse_ms, sizeof(cfg->topic_relay_pulse_ms), DEFAULT_TOPIC_RELAY_PULSE_MS);
-
-    uint32_t apdu_to = DEFAULT_APDU_RELAY_TIMEOUT_MS;
-    nvs_get_u32(h, "apdu_to_ms", &apdu_to);
-    cfg->apdu_relay_timeout_ms = apdu_to;
 
     get_str(h, "admin_pass", cfg->admin_password, sizeof(cfg->admin_password), DEFAULT_ADMIN_PASSWORD);
 
@@ -133,14 +121,10 @@ esp_err_t app_config_save(const app_config_t *cfg)
     nvs_set_str(h, "t_apdu_resp", cfg->topic_apdu_resp);
     nvs_set_str(h, "t_result", cfg->topic_result);
     nvs_set_str(h, "t_homekey", cfg->topic_homekey_group_id);
-    nvs_set_str(h, "t_mf_scan_c", cfg->topic_mifare_scan_cmd);
-    nvs_set_str(h, "t_mf_scan_r", cfg->topic_mifare_scan_result);
 
     nvs_set_u32(h, "relay_ms", cfg->relay_pulse_ms);
     nvs_set_u8(h, "relay_mqtt", cfg->relay_pulse_via_mqtt ? 1 : 0);
     nvs_set_str(h, "t_relay_ms", cfg->topic_relay_pulse_ms);
-
-    nvs_set_u32(h, "apdu_to_ms", cfg->apdu_relay_timeout_ms);
 
     nvs_set_str(h, "admin_pass", cfg->admin_password);
 

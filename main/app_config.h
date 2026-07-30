@@ -36,11 +36,6 @@ typedef struct {
     char     topic_apdu_resp[APP_CFG_STR_LEN];
     char     topic_result[APP_CFG_STR_LEN];
     char     topic_homekey_group_id[APP_CFG_STR_LEN];
-    // Siehe mifare_classic_scan.h -- Trigger (Addon/Shell -> ESP32) und
-    // Ergebnis (ESP32 -> Addon) fuer den automatischen MIFARE-Classic-
-    // Default-Key-Dictionary-Scan.
-    char     topic_mifare_scan_cmd[APP_CFG_STR_LEN];
-    char     topic_mifare_scan_result[APP_CFG_STR_LEN];
 
     // Relais
     uint32_t relay_pulse_ms;
@@ -50,17 +45,6 @@ typedef struct {
     // false: relay_pulse_ms wird fest verwendet (Standardverhalten).
     bool     relay_pulse_via_mqtt;
     char     topic_relay_pulse_ms[APP_CFG_STR_LEN];
-
-    // NFC/APDU-Relay (siehe main.c:card_event_task())
-    // Wie lange nach dem letzten APDU-Kommando (bzw. seit Kartenerkennung)
-    // auf das naechste Kommando oder nfc/result gewartet wird, bevor die
-    // Karte freigegeben wird. Der urspruengliche feste Wert (3000ms) ist
-    // fuer die schnelle Automatik-Zutrittslogik ausgelegt (Kommandos
-    // folgen dort in Millisekunden) -- fuer interaktive Debug-Tools wie die
-    // NFC-Shell des Addons (Mensch tippt/klickt dazwischen) reicht das
-    // nicht, die Karte wird sonst freigegeben, bevor ueberhaupt ein
-    // Kommando abgeschickt wurde.
-    uint32_t apdu_relay_timeout_ms;
 
     // WebGUI-Login (HTTP Basic Auth, Benutzername fix "admin")
     char     admin_password[APP_CFG_STR_LEN];

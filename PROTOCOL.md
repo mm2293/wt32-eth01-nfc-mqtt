@@ -92,50 +92,29 @@ mit einer Log-Warnung ignoriert, der zuletzt gueltige Wert bleibt bestehen.
 Ist die Option deaktiviert (Standard), wird dieses Topic gar nicht erst
 abonniert und die feste, ueber die WebGUI konfigurierte Pulsdauer gilt.
 
-### `nfc/mifare_scan_cmd` (Addon/NFC-Shell -> ESP32)
+### `nfc/apdu_relay_timeout_ms` (Addon -> ESP32, retained)
 
-```json
-{"session_id": 17}
+```
+3000   (KEIN JSON -- reiner Zahl-String in Millisekunden als Payload, 500-120000)
 ```
 
-Loest fuer die aktuell offene APDU-Relay-Session (siehe oben) einen
-automatischen MIFARE-Classic-Dictionary-Scan aus (siehe
-`mifare_classic_scan.c`): die Firmware testet eine feste Liste gaengiger
-Default-Keys (identisch zu `mfoc`s eingebautem Key-Dictionary) gegen Key A
-und Key B jedes Sektors -- per direktem PN532-Zugriff, ohne MQTT-Rundlauf
-pro einzelnem Versuch. Nur fuer MIFARE Classic sinnvoll (SAK ohne
-ISO14443-4-Bit, z.B. 0x08/0x18/0x09/0x28) -- bei einer ISO14443-4-Karte
-(DESFire/HomeKey) wird die Anfrage mit einer Log-Warnung ignoriert.
+Steuert, wie lange `main.c:card_event_task()` zwischen APDU-Kommandos
+(bzw. seit Kartenerkennung) auf das naechste Kommando oder `nfc/result`
+wartet, bevor die Karte freigegeben wird. Anders als bei
+`nfc/relay_pulse_ms` gibt es hier **kein** Enable/Disable-Toggle -- das
+Topic ist immer abonniert, Standard ist 3000ms (passend fuer die schnelle
+Automatik-Zutrittslogik, wo Kommandos in Millisekunden folgen). Ungueltige
+Werte (ausserhalb 500-120000 oder nicht-numerisch) werden mit einer
+Log-Warnung ignoriert, der zuletzt gueltige Wert bleibt bestehen.
 
-Deckt NUR den Dictionary-Teil ab ("ist die Karte noch auf Standard-Keys").
-Ein echter Nested/Dark-Side-Cracking-Angriff wie bei `mfoc` fuer Sektoren
-mit individuellen (nicht in der Liste enthaltenen) Keys ist damit NICHT
-moeglich -- der PN532 kapselt die Crypto1-Authentifizierung intern als
-Blackbox und legt die dafuer noetigen rohen Zwischenzustaende nicht offen.
-Fuer solche Sektoren bleibt ein externes Tool wie `mfoc` (auf einem PC mit
-libnfc-kompatiblem Reader) noetig.
-
-Kann je nach Kartenzustand mehrere Sekunden bis niedrige Minuten dauern
-(Worst Case: kein Sektor auf einem Default-Key, dann werden alle
-Kombinationen durchprobiert) -- waehrenddessen ist die Firmware blockiert
-und verarbeitet keine weiteren Kommandos fuer diese Karte.
-
-### `nfc/mifare_scan_result` (ESP32 -> Addon)
-
-```json
-{
-  "session_id": 17,
-  "sector_count": 16,
-  "sectors": [
-    {"sector": 0, "key_a": null, "key_b": null},
-    {"sector": 1, "key_a": null, "key_b": null},
-    {"sector": 2, "key_a": "FFFFFFFFFFFF", "key_b": "FFFFFFFFFFFF"}
-  ]
-}
-```
-
-`key_a`/`key_b` sind `null`, wenn keiner der Default-Keys aus der
-Dictionary-Liste passte, sonst der gefundene Key als Hex-String.
+Das Addon (nicht die WebGUI) steuert diesen Wert vollstaendig: z.B. hoch
+auf 30000-60000ms beim Oeffnen der interaktiven NFC-Shell (Mensch
+tippt/klickt zwischen Kommandos, das dauert laenger als Millisekunden),
+wieder runter auf 3000ms beim Schliessen. Wird NICHT in NVS persistiert --
+nach einem Reboot gilt wieder der Compile-Time-Default, bis das Addon den
+Wert erneut setzt (retained heisst hier nur: der Broker liefert ihn beim
+naechsten Verbindungsaufbau sofort nach, nicht dass die Firmware ihn selbst
+speichert).
 
 ### `nfc/result` (Addon -> ESP32, bereits vorhanden)
 

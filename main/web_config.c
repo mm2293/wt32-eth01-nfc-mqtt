@@ -157,7 +157,6 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     char e_t_raw[APP_CFG_STR_LEN * 2], e_t_cmd[APP_CFG_STR_LEN * 2], e_t_resp[APP_CFG_STR_LEN * 2];
     char e_t_result[APP_CFG_STR_LEN * 2], e_t_hk[APP_CFG_STR_LEN * 2];
     char e_t_relay_ms[APP_CFG_STR_LEN * 2];
-    char e_t_mf_scan_cmd[APP_CFG_STR_LEN * 2], e_t_mf_scan_result[APP_CFG_STR_LEN * 2];
     char e_admin_pass[APP_CFG_STR_LEN * 2];
 
     html_escape(cfg.net_ip, e_ip, sizeof(e_ip));
@@ -175,8 +174,6 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     html_escape(cfg.topic_result, e_t_result, sizeof(e_t_result));
     html_escape(cfg.topic_homekey_group_id, e_t_hk, sizeof(e_t_hk));
     html_escape(cfg.topic_relay_pulse_ms, e_t_relay_ms, sizeof(e_t_relay_ms));
-    html_escape(cfg.topic_mifare_scan_cmd, e_t_mf_scan_cmd, sizeof(e_t_mf_scan_cmd));
-    html_escape(cfg.topic_mifare_scan_result, e_t_mf_scan_result, sizeof(e_t_mf_scan_result));
     html_escape(cfg.admin_password, e_admin_pass, sizeof(e_admin_pass));
 
     // Diagnose-Info fuer das OTA-Fieldset: aktuell laufende Partition und ob
@@ -247,23 +244,11 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "<label>Topic: APDU-Antwort (ESP32 -&gt; Addon)<input type=\"text\" name=\"t_apdu_resp\" value=\"%s\"></label>"
         "<label>Topic: Ergebnis (Addon -&gt; ESP32)<input type=\"text\" name=\"t_result\" value=\"%s\"></label>"
         "<label>Topic: HomeKey Reader-Group-ID (Addon -&gt; ESP32)<input type=\"text\" name=\"t_homekey\" value=\"%s\"></label>"
-        "<label>Topic: MIFARE-Scan-Trigger (Addon -&gt; ESP32)<input type=\"text\" name=\"t_mf_scan_cmd\" value=\"%s\"></label>"
-        "<label>Topic: MIFARE-Scan-Ergebnis (ESP32 -&gt; Addon)<input type=\"text\" name=\"t_mf_scan_result\" value=\"%s\"></label>"
+        "<p style=\"font-size:.85em;color:#555\">Der APDU-Relay-Timeout (wie lange die Karte zwischen Kommandos "
+        "im Feld gehalten wird) wird nicht mehr hier konfiguriert, sondern vollstaendig vom Addon per retained "
+        "MQTT-Topic <code>nfc/apdu_relay_timeout_ms</code> gesteuert (Standard 3000ms).</p>"
         "</fieldset>",
-        e_uri, e_user, e_pass, e_cid, e_t_raw, e_t_cmd, e_t_resp, e_t_result, e_t_hk,
-        e_t_mf_scan_cmd, e_t_mf_scan_result);
-
-    used = strlen(html);
-    snprintf(html + used, html_cap - used,
-        "<fieldset><legend>NFC/APDU-Relay</legend>"
-        "<label>Timeout zwischen Kommandos (ms)<input type=\"number\" name=\"apdu_to_ms\" value=\"%" PRIu32 "\" min=\"500\" max=\"120000\"></label>"
-        "<p style=\"font-size:.85em;color:#555\">Wie lange die Karte nach dem letzten APDU-Kommando (bzw. seit "
-        "Erkennung) noch im Feld gehalten wird, bevor die Firmware aufgibt. Standard 3000ms passt fuer die "
-        "automatische Zutrittslogik (Kommandos folgen dort in Millisekunden). Fuer interaktive Tools wie die "
-        "NFC-Shell des Addons (Mensch tippt/klickt dazwischen) einen deutlich hoeheren Wert setzen, z.B. 30000-60000, "
-        "sonst wird die Karte freigegeben, bevor ueberhaupt ein Kommando abgeschickt wurde.</p>"
-        "</fieldset>",
-        cfg.apdu_relay_timeout_ms);
+        e_uri, e_user, e_pass, e_cid, e_t_raw, e_t_cmd, e_t_resp, e_t_result, e_t_hk);
 
     used = strlen(html);
     snprintf(html + used, html_cap - used,
@@ -373,17 +358,6 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     form_get(body, "t_apdu_resp", cfg.topic_apdu_resp, sizeof(cfg.topic_apdu_resp));
     form_get(body, "t_result", cfg.topic_result, sizeof(cfg.topic_result));
     form_get(body, "t_homekey", cfg.topic_homekey_group_id, sizeof(cfg.topic_homekey_group_id));
-    form_get(body, "t_mf_scan_cmd", cfg.topic_mifare_scan_cmd, sizeof(cfg.topic_mifare_scan_cmd));
-    form_get(body, "t_mf_scan_result", cfg.topic_mifare_scan_result, sizeof(cfg.topic_mifare_scan_result));
-
-    char apdu_to_str[16];
-    form_get(body, "apdu_to_ms", apdu_to_str, sizeof(apdu_to_str));
-    if (apdu_to_str[0] != '\0') {
-        long v = strtol(apdu_to_str, NULL, 10);
-        if (v >= 500 && v <= 120000) {
-            cfg.apdu_relay_timeout_ms = (uint32_t)v;
-        }
-    }
 
     cfg.relay_pulse_via_mqtt = form_get_bool(body, "relay_mqtt");
     form_get(body, "t_relay_ms", cfg.topic_relay_pulse_ms, sizeof(cfg.topic_relay_pulse_ms));

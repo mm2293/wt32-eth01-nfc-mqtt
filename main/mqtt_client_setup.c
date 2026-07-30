@@ -16,6 +16,13 @@
  *                                    ECP-Broadcast, der diese ID enthaelt). Solange
  *                                    das Addon noch nicht per HAP gepairt ist, kommt
  *                                    hier nichts an und es bleibt beim Default 00...00.
+ *   nfc/apdu_relay_timeout_ms (Addon -> ESP32, retained) Zahl-String in ms,
+ *                                    siehe mqtt_client_setup_get_apdu_relay_timeout_ms()
+ *                                    -- steuert, wie lange main.c:card_event_task()
+ *                                    zwischen APDU-Kommandos auf das naechste
+ *                                    wartet, bevor die Karte freigegeben wird.
+ *                                    Volle Kontrolle liegt beim Addon (z.B. hoch
+ *                                    beim Oeffnen der interaktiven NFC-Shell).
  */
 
 #include "mqtt_client_setup.h"
@@ -46,15 +53,20 @@ static char s_topic_outgoing_apdu_resp[TOPIC_LEN];
 static char s_topic_incoming_homekey_group_id[TOPIC_LEN];
 static char s_topic_incoming_relay_pulse_ms[TOPIC_LEN];
 static bool s_relay_pulse_via_mqtt = false;
-static char s_topic_incoming_mifare_scan_cmd[TOPIC_LEN];
-static char s_topic_outgoing_mifare_scan_result[TOPIC_LEN];
+
+// Fest kodiertes (nicht ueber WebGUI/NVS konfigurierbares) Topic -- das
+// Addon steuert den APDU-Relay-Timeout vollstaendig selbst (z.B. hoch beim
+// Oeffnen der NFC-Shell, wieder runter beim Schliessen), siehe
+// mqtt_client_setup_get_apdu_relay_timeout_ms() und PROTOCOL.md.
+#define TOPIC_APDU_RELAY_TIMEOUT_MS "nfc/apdu_relay_timeout_ms"
+#define APDU_RELAY_TIMEOUT_DEFAULT_MS 3000
+static uint32_t s_apdu_relay_timeout_ms = APDU_RELAY_TIMEOUT_DEFAULT_MS;
 
 static esp_mqtt_client_handle_t s_mqtt_client = NULL;
 static QueueHandle_t s_session_queue = NULL;
 
 typedef struct {
     bool is_session_end;
-    bool is_mifare_scan;
     uint32_t session_id;
     uint8_t apdu[MQTT_APDU_MAX_LEN];
     size_t apdu_len;
@@ -156,37 +168,16 @@ static void handle_relay_pulse_ms_message(const char *payload)
     relay_control_set_pulse_ms((uint32_t)ms);
 }
 
-static void handle_mifare_scan_cmd_message(const char *payload)
+static void handle_apdu_relay_timeout_ms_message(const char *payload)
 {
-    cJSON *json = cJSON_Parse(payload);
-    if (json == NULL) {
-        ESP_LOGE(TAG, "mifare_scan_cmd-JSON konnte nicht geparst werden");
+    char *endptr = NULL;
+    long ms = strtol(payload, &endptr, 10);
+    if (endptr == payload || ms < 500 || ms > 120000) {
+        ESP_LOGW(TAG, "apdu_relay_timeout_ms mit ungueltigem Wert ignoriert: %s", payload);
         return;
     }
-
-    cJSON *session_id_item = cJSON_GetObjectItem(json, "session_id");
-    if (!cJSON_IsNumber(session_id_item)) {
-        ESP_LOGW(TAG, "mifare_scan_cmd ohne session_id ignoriert");
-        cJSON_Delete(json);
-        return;
-    }
-
-    session_queue_item_t *item = malloc(sizeof(session_queue_item_t));
-    if (item == NULL) {
-        ESP_LOGE(TAG, "mifare_scan_cmd: kein Speicher fuer session_queue_item_t");
-        cJSON_Delete(json);
-        return;
-    }
-    memset(item, 0, sizeof(*item));
-    item->is_mifare_scan = true;
-    item->session_id = (uint32_t)session_id_item->valuedouble;
-
-    cJSON_Delete(json);
-
-    if (s_session_queue != NULL) {
-        xQueueSend(s_session_queue, item, 0);
-    }
-    free(item);
+    s_apdu_relay_timeout_ms = (uint32_t)ms;
+    ESP_LOGI(TAG, "APDU-Relay-Timeout per MQTT auf %ldms gesetzt", ms);
 }
 
 static void handle_result_message(const char *payload)
@@ -253,8 +244,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
                 ESP_LOGI(TAG, "Abonniere zusaetzlich %s (Relais-Pulsdauer)", s_topic_incoming_relay_pulse_ms);
                 esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_relay_pulse_ms, 1);
             }
-            ESP_LOGI(TAG, "Abonniere zusaetzlich %s (MIFARE-Scan-Trigger)", s_topic_incoming_mifare_scan_cmd);
-            esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_mifare_scan_cmd, 0);
+            // Retained, immer abonniert (kein Toggle) -- das Addon steuert
+            // den APDU-Relay-Timeout vollstaendig selbst, ohne Umweg ueber
+            // die WebGUI (siehe mqtt_client_setup_get_apdu_relay_timeout_ms()).
+            ESP_LOGI(TAG, "Abonniere zusaetzlich %s (APDU-Relay-Timeout)", TOPIC_APDU_RELAY_TIMEOUT_MS);
+            esp_mqtt_client_subscribe(s_mqtt_client, TOPIC_APDU_RELAY_TIMEOUT_MS, 1);
             break;
 
         case MQTT_EVENT_DISCONNECTED:
@@ -291,8 +285,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
                 handle_homekey_group_id_message(payload);
             } else if (s_relay_pulse_via_mqtt && strcmp(topic, s_topic_incoming_relay_pulse_ms) == 0) {
                 handle_relay_pulse_ms_message(payload);
-            } else if (strcmp(topic, s_topic_incoming_mifare_scan_cmd) == 0) {
-                handle_mifare_scan_cmd_message(payload);
+            } else if (strcmp(topic, TOPIC_APDU_RELAY_TIMEOUT_MS) == 0) {
+                handle_apdu_relay_timeout_ms_message(payload);
             }
             free(payload);
             break;
@@ -308,8 +302,7 @@ esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, c
                                   const char *topic_raw, const char *topic_apdu_cmd,
                                   const char *topic_apdu_resp, const char *topic_result,
                                   const char *topic_homekey_group_id,
-                                  bool relay_pulse_via_mqtt, const char *topic_relay_pulse_ms,
-                                  const char *topic_mifare_scan_cmd, const char *topic_mifare_scan_result)
+                                  bool relay_pulse_via_mqtt, const char *topic_relay_pulse_ms)
 {
     s_session_queue = xQueueCreate(8, sizeof(session_queue_item_t));
 
@@ -320,8 +313,6 @@ esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, c
     strncpy(s_topic_incoming_homekey_group_id, topic_homekey_group_id, TOPIC_LEN - 1);
     s_relay_pulse_via_mqtt = relay_pulse_via_mqtt;
     strncpy(s_topic_incoming_relay_pulse_ms, topic_relay_pulse_ms, TOPIC_LEN - 1);
-    strncpy(s_topic_incoming_mifare_scan_cmd, topic_mifare_scan_cmd, TOPIC_LEN - 1);
-    strncpy(s_topic_outgoing_mifare_scan_result, topic_mifare_scan_result, TOPIC_LEN - 1);
 
     // Default-Puffergroesse von esp-mqtt (1024 Byte) reicht seit
     // MQTT_APDU_MAX_LEN=2048 nicht mehr fuer ein hex-kodiertes apdu_cmd/
@@ -410,11 +401,9 @@ void mqtt_client_setup_publish_apdu_response(uint32_t session_id, bool ok,
 }
 
 bool mqtt_client_setup_wait_apdu_cmd(uint32_t session_id, mqtt_apdu_cmd_t *out_cmd,
-                                      bool *out_session_ended, bool *out_is_mifare_scan,
-                                      uint32_t timeout_ms)
+                                      bool *out_session_ended, uint32_t timeout_ms)
 {
     *out_session_ended = false;
-    *out_is_mifare_scan = false;
     if (s_session_queue == NULL) return false;
 
     TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
@@ -437,11 +426,6 @@ bool mqtt_client_setup_wait_apdu_cmd(uint32_t session_id, mqtt_apdu_cmd_t *out_c
             return false;
         }
 
-        if (item.is_mifare_scan) {
-            *out_is_mifare_scan = true;
-            return true;
-        }
-
         out_cmd->session_id = item.session_id;
         out_cmd->apdu_len = item.apdu_len;
         memcpy(out_cmd->apdu, item.apdu, item.apdu_len);
@@ -449,43 +433,7 @@ bool mqtt_client_setup_wait_apdu_cmd(uint32_t session_id, mqtt_apdu_cmd_t *out_c
     }
 }
 
-void mqtt_client_setup_publish_mifare_scan_result(uint32_t session_id,
-                                                   const mifare_scan_result_t *result)
+uint32_t mqtt_client_setup_get_apdu_relay_timeout_ms(void)
 {
-    if (s_mqtt_client == NULL) return;
-
-    cJSON *json = cJSON_CreateObject();
-    cJSON_AddNumberToObject(json, "session_id", session_id);
-    cJSON_AddNumberToObject(json, "sector_count", result->sector_count);
-
-    cJSON *sectors = cJSON_CreateArray();
-    char key_hex[13];
-    for (uint8_t i = 0; i < result->sector_count; i++) {
-        const mifare_sector_keys_t *s = &result->sectors[i];
-        cJSON *sector_obj = cJSON_CreateObject();
-        cJSON_AddNumberToObject(sector_obj, "sector", i);
-
-        if (s->key_a_found) {
-            for (int b = 0; b < 6; b++) snprintf(&key_hex[b * 2], 3, "%02X", s->key_a[b]);
-            cJSON_AddStringToObject(sector_obj, "key_a", key_hex);
-        } else {
-            cJSON_AddNullToObject(sector_obj, "key_a");
-        }
-
-        if (s->key_b_found) {
-            for (int b = 0; b < 6; b++) snprintf(&key_hex[b * 2], 3, "%02X", s->key_b[b]);
-            cJSON_AddStringToObject(sector_obj, "key_b", key_hex);
-        } else {
-            cJSON_AddNullToObject(sector_obj, "key_b");
-        }
-
-        cJSON_AddItemToArray(sectors, sector_obj);
-    }
-    cJSON_AddItemToObject(json, "sectors", sectors);
-
-    char *payload = cJSON_PrintUnformatted(json);
-    ESP_LOGI(TAG, "Sende MIFARE-Scan-Ergebnis (%d Byte)", (int)strlen(payload));
-    esp_mqtt_client_publish(s_mqtt_client, s_topic_outgoing_mifare_scan_result, payload, 0, 1, 0);
-    free(payload);
-    cJSON_Delete(json);
+    return s_apdu_relay_timeout_ms;
 }
