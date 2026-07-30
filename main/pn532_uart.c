@@ -160,6 +160,11 @@ esp_err_t pn532_uart_init(void)
     return ESP_OK;
 }
 
+uart_port_t pn532_uart_get_port(void)
+{
+    return PN532_UART_PORT;
+}
+
 /* ISO/IEC 14443-3 CRC_A (Praeset 0x6363), wird u.a. fuer den rohen
  * ECP-Broadcast-Frame gebraucht, den InCommunicateThru NICHT automatisch
  * mit CRC versieht (anders als z.B. InListPassiveTarget-Kommandos, die vom

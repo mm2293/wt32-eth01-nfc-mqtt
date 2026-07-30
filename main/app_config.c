@@ -22,6 +22,8 @@ static const char *NVS_NAMESPACE = "cfg";
 #define DEFAULT_TOPIC_RELAY_PULSE_MS     "nfc/relay_pulse_ms"
 #define DEFAULT_HOSTNAME         "wt32-nfc-gateway"
 #define DEFAULT_ADMIN_PASSWORD   "admin"
+#define DEFAULT_PN532_RAW_BRIDGE_MODE  false
+#define DEFAULT_PN532_BRIDGE_TCP_PORT  4444
 
 static void get_str(nvs_handle_t h, const char *key, char *out, size_t out_cap, const char *dflt)
 {
@@ -56,6 +58,8 @@ esp_err_t app_config_load(app_config_t *cfg)
         cfg->relay_pulse_via_mqtt = false;
         strncpy(cfg->topic_relay_pulse_ms, DEFAULT_TOPIC_RELAY_PULSE_MS, sizeof(cfg->topic_relay_pulse_ms) - 1);
         strncpy(cfg->admin_password, DEFAULT_ADMIN_PASSWORD, sizeof(cfg->admin_password) - 1);
+        cfg->pn532_raw_bridge_mode = DEFAULT_PN532_RAW_BRIDGE_MODE;
+        cfg->pn532_bridge_tcp_port = DEFAULT_PN532_BRIDGE_TCP_PORT;
         return ESP_OK;
     }
 
@@ -90,6 +94,14 @@ esp_err_t app_config_load(app_config_t *cfg)
     get_str(h, "t_relay_ms", cfg->topic_relay_pulse_ms, sizeof(cfg->topic_relay_pulse_ms), DEFAULT_TOPIC_RELAY_PULSE_MS);
 
     get_str(h, "admin_pass", cfg->admin_password, sizeof(cfg->admin_password), DEFAULT_ADMIN_PASSWORD);
+
+    uint8_t raw_bridge_u8 = DEFAULT_PN532_RAW_BRIDGE_MODE ? 1 : 0;
+    nvs_get_u8(h, "pn532_raw", &raw_bridge_u8);
+    cfg->pn532_raw_bridge_mode = raw_bridge_u8 != 0;
+
+    uint16_t bridge_port = DEFAULT_PN532_BRIDGE_TCP_PORT;
+    nvs_get_u16(h, "pn532_port", &bridge_port);
+    cfg->pn532_bridge_tcp_port = bridge_port;
 
     nvs_close(h);
     return ESP_OK;
@@ -127,6 +139,9 @@ esp_err_t app_config_save(const app_config_t *cfg)
     nvs_set_str(h, "t_relay_ms", cfg->topic_relay_pulse_ms);
 
     nvs_set_str(h, "admin_pass", cfg->admin_password);
+
+    nvs_set_u8(h, "pn532_raw", cfg->pn532_raw_bridge_mode ? 1 : 0);
+    nvs_set_u16(h, "pn532_port", cfg->pn532_bridge_tcp_port);
 
     err = nvs_commit(h);
     nvs_close(h);

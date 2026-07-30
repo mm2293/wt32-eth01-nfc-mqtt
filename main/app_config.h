@@ -48,6 +48,17 @@ typedef struct {
 
     // WebGUI-Login (HTTP Basic Auth, Benutzername fix "admin")
     char     admin_password[APP_CFG_STR_LEN];
+
+    // PN532-Modus: false (Default) = Managed -- Firmware pollt selbst und
+    // relayt HomeKey/DESFire-APDUs per MQTT (siehe card_event_task in
+    // main.c), unveraendertes Verhalten. true = Raw-Bridge -- Firmware
+    // pollt NICHT selbst, sondern exponiert die PN532-UART 1:1 als
+    // TCP-Server (siehe pn532_bridge.c) fuer direkten Zugriff durch das
+    // Addon/externe Tools (mfoc, libnfc, ...) per socat. Beide Modi sind
+    // exklusiv (ein PN532, eine UART) -- Umschalten erfordert einen
+    // Neustart (siehe main.c:app_main()).
+    bool     pn532_raw_bridge_mode;
+    uint16_t pn532_bridge_tcp_port;
 } app_config_t;
 
 /* Laedt die Konfiguration aus NVS. Fehlende/noch nie gespeicherte Werte
