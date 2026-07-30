@@ -524,7 +524,14 @@ esp_err_t web_config_start(void)
     // main.c) -- ein Seitenaufruf soll die NFC-Polling-/APDU-Relay-Task unter
     // Last niemals verdraengen, sondern selbst zurueckstehen.
     config.task_priority = tskIDLE_PRIORITY + 3;
-    config.stack_size = 6144;
+    // War 6144 -- reichte nicht mehr, nachdem CONFIG_HTTPD_MAX_REQ_HDR_LEN
+    // (siehe sdkconfig.defaults) von 512 auf 4096 Byte erhoeht wurde: die
+    // Header werden von esp_http_server in stackbasierten Puffern geparst,
+    // die mit dieser Kconfig-Groesse mitwachsen. Ohne diese Erhoehung
+    // stuerzte die httpd-Task auf echter Hardware mit "stack overflow in
+    // task httpd" ab, sobald ein Request mit vollem Browser-Header-Satz
+    // ankam.
+    config.stack_size = 10240;
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
     // Der Default-Header-Puffer (CONFIG_HTTPD_MAX_REQ_HDR_LEN, siehe
