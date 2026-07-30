@@ -151,6 +151,29 @@ sondern die Reader-Seite (homekey_lib/DESFireSession) erkennt die daraufhin
 nicht mehr passende Kryptoantwort der Karte zuverlaessig als Auth-Fehler statt
 sie faelschlich zu akzeptieren.
 
+## MIFARE Classic: Re-Selektion vor jedem nativen Kommando
+
+Auf echter Hardware reproduziert: identisches natives Auth-Kommando (`60`
++ Block + Key + UID) lieferte je nach Vorgeschichte abwechselnd Statusbyte
+`14` (Auth fehlgeschlagen) oder `00` (erfolgreich) -- auch wenn per
+externem Tool (`mfoc`) verifiziert war, dass der Key fuer den Sektor
+korrekt war. Ursache: ein vorher fehlgeschlagener Auth-Versuch (z.B. auf
+einem anderen Sektor mit falschem Key, etwa beim sektorweisen
+Durchprobieren via NFC-Shell) hinterlaesst die Karte in einem "verwirrten"
+Crypto1-Zustand, der auch nachfolgende, eigentlich korrekte Auth-Versuche
+mit `14` ablehnt -- bis die Karte sauber neu selektiert (HALT/WakeUp +
+Anticollision + SELECT) wird. `mfoc`/libnfc reselektieren aus demselben
+Grund vor jedem Dictionary-Versuch.
+
+Behoben in `pn532_data_exchange_ex()`: fuer `native=true` (MIFARE Classic)
+wird jetzt vor JEDEM Kommando per `pn532_reactivate_target()` frisch
+reselektiert, nicht mehr nur bei echten Kommunikationsfehlern. Fuer den
+ISO14443-4-Pfad (DESFire/HomeKey, `native=false`) bleibt das Verhalten
+unveraendert -- dort MUSS die Selektion ueber eine ganze APDU-Kette
+erhalten bleiben, eine Re-Selektion wuerde den kryptografischen
+Sitzungszustand (Auth0/Auth1 bei HomeKey, Session-Keys bei DESFire)
+zerstoeren.
+
 ## Offene Folgeschritte
 
 - Mifare Classic/Crypto1-Unterstuetzung (addon-seitig, `mifare_classic_module.py`)

@@ -693,6 +693,27 @@ esp_err_t pn532_data_exchange_ex(const uint8_t *apdu, size_t apdu_len,
 {
     if (!s_target_selected) return ESP_ERR_INVALID_STATE;
 
+    if (native) {
+        // MIFARE Classic: anders als bei ISO14443-4 (DESFire/HomeKey), wo die
+        // Selektion fuer eine ganze APDU-Kette erhalten bleiben MUSS (eine
+        // Re-Selektion wuerde den kryptografischen Sitzungszustand zerstoeren),
+        // braucht jedes native Auth-Kommando (0x60/0x61) eine FRISCHE
+        // Selektion (HALT/WakeUp+Anticollision+SELECT), sonst kann die Karte
+        // nach einem vorherigen fehlgeschlagenen Auth-Versuch (falscher Key,
+        // z.B. beim sektorweisen Durchprobieren via NFC-Shell) in einem
+        // "verwirrten" Crypto1-Zustand haengenbleiben und einen eigentlich
+        // KORREKTEN Key beim naechsten Versuch trotzdem mit Statusbyte 0x14
+        // ablehnen -- auf echter Hardware reproduziert: derselbe Key/Sektor
+        // lieferte abwechselnd 0x14 und 0x00, je nachdem ob vorher schon ein
+        // falscher Key auf einem anderen Sektor probiert wurde. mfoc/libnfc
+        // reselektieren aus demselben Grund vor jedem Dictionary-Versuch.
+        if (pn532_reactivate_target() != ESP_OK) {
+            ESP_LOGW(TAG, "Re-Selektion vor nativem MIFARE-Kommando fehlgeschlagen -- "
+                          "Karte hat das Feld vermutlich verlassen");
+            return ESP_ERR_NOT_FOUND;
+        }
+    }
+
     esp_err_t err = native
         ? pn532_data_exchange_once_native(apdu, apdu_len, resp, resp_cap, resp_len, timeout_ms)
         : pn532_data_exchange_once(apdu, apdu_len, resp, resp_cap, resp_len, timeout_ms);
