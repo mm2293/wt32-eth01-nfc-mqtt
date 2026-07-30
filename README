@@ -2,3 +2,81 @@ cd esp/esp-idf/wt32_firmware/
 idf.py build
 idf.py -p /dev/serial0 flash
 idf.py -p /dev/serial0 monitor
+
+## Konfiguration (Netzwerk/MQTT/Relais)
+
+Nach dem ersten Boot (Ethernet per DHCP, siehe serielles Log fuer die
+zugewiesene IP) ist unter `http://<geraet-ip>/` eine Mini-WebGUI erreichbar,
+ueber die sich folgende, bislang fest kodierte Werte aendern lassen:
+
+- Netzwerk: DHCP oder statische IP (inkl. Gateway/Subnetzmaske/DNS), Hostname
+- MQTT: Broker-URI, Benutzername/Passwort, Client-ID, alle 5 Topics (siehe
+  PROTOCOL.md)
+- Relais-Pulsdauer: entweder fest (ms-Feld) oder per MQTT-Topic vom Addon
+  gesetzt (Toggle "Pulsdauer per MQTT setzen", siehe PROTOCOL.md ->
+  `nfc/relay_pulse_ms`)
+- Das Admin-Passwort der WebGUI selbst
+
+Der APDU-Relay-Timeout (wie lange die Karte zwischen Kommandos im Feld
+gehalten wird) ist **nicht** Teil der WebGUI -- das steuert das Addon
+vollstaendig selbst per retained MQTT-Topic `nfc/apdu_relay_timeout_ms`
+(Standard 3000ms, siehe PROTOCOL.md), z.B. hochgesetzt waehrend die
+interaktive NFC-Shell offen ist.
+
+Login: Benutzername `admin`, Passwort initial `admin` (danach ueber die GUI
+aenderbar). Die Seite ist per HTTP Basic Auth geschuetzt -- nach dem
+Speichern startet das Geraet automatisch neu, damit Ethernet/MQTT mit den
+neuen Werten initialisiert werden.
+
+## Firmware-Update (OTA) ueber die WebGUI
+
+Im Fieldset "Firmware-Update (OTA)" laesst sich eine neue `.bin`-Firmware
+direkt hochladen -- die Firmware schreibt sie per `esp_ota_write()` in die
+jeweils inaktive App-Partition, prueft sie und startet danach automatisch in
+die neue Version.
+
+**Einmalige Voraussetzung:** Das Projekt braucht dafuer zwei App-Partitionen
+statt der einen `factory`-Partition. Dieses Repo liefert dafuer
+`partitions.csv` (Layout: `nvs`/`otadata`/`phy_init` + `ota_0`/`ota_1` je
+1.5MB, passend fuer 4MB-Flash) UND `sdkconfig.defaults` mit den noetigen
+zwei Zeilen (`CONFIG_PARTITION_TABLE_CUSTOM=y` /
+`CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"`), sodass
+`idf.py build` die Umstellung von selbst vornimmt -- **aber nur, solange noch
+keine `sdkconfig`-Datei im Projekt existiert** (`sdkconfig.defaults` wird nur
+beim erstmaligen Erzeugen der `sdkconfig` eingelesen, eine bereits
+bestehende `sdkconfig` hat immer Vorrang und wird dadurch nicht
+nachtraeglich veraendert).
+
+Bei einem bereits laufenden Projekt (bestehende `sdkconfig` von vorherigen
+Builds) reicht deshalb keine reine Codeaenderung -- einmalig eine der beiden
+Optionen:
+
+- Die bestehende `sdkconfig`-Datei loeschen (dann greift `sdkconfig.defaults`
+  beim naechsten `idf.py build` automatisch), oder
+- Die zwei Zeilen aus `sdkconfig.defaults` direkt in die bestehende
+  `sdkconfig` eintragen/aendern (ganz normale Textdatei, kein menuconfig
+  noetig).
+
+Da sich dabei die Flash-Offsets aendern, ist danach **einmalig** ein
+vollstaendiges `idf.py fullclean build flash` (kein reines OTA-Update)
+noetig, erst danach steht das Firmware-Update-Fieldset auf der
+Konfigurationsseite zur Verfuegung -- ohne diese Umstellung meldet der
+Upload "Keine OTA-Partition gefunden".
+
+**Sicherheitshinweis:** Ein Firmware-Upload entspricht Codeausfuehrung auf
+dem Geraet -- der Zugriff ist wie der Rest der WebGUI nur per Basic-Auth
+geschuetzt. Das Admin-Passwort sollte entsprechend nicht auf dem
+Werkspasswort belassen werden.
+
+## MIFARE Classic: Dictionary-Scan und Nested-Attacks
+
+Ein automatischer Default-Key-Dictionary-Scan sowie die interaktive
+NFC-Shell leben im Addon (`ha-nfc-addon`), nicht in dieser Firmware --
+beide nutzen den bestehenden `nfc/apdu_cmd`/`nfc/apdu_resp`-Kanal, es
+brauchte dafuer keine eigenen Firmware-Topics. Ein echter
+Nested/Dark-Side-Cracking-Angriff (wie bei `mfoc` fuer Sektoren mit
+individuellen Keys) ist ueber diesen Kanal grundsaetzlich nicht moeglich,
+da der PN532 die MIFARE-Authentifizierung bei `InDataExchange` intern als
+Blackbox kapselt und die dafuer noetigen rohen Zwischenzustaende nicht
+offenlegt -- dafuer bleibt ein externes Tool wie `mfoc` auf einem PC mit
+direkt angeschlossenem, libnfc-kompatiblem Reader noetig.

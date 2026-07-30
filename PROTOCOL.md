@@ -77,6 +77,45 @@ kommt hier nichts an -- die Firmware sendet dann weiterhin `00...00` als
 Identifier (siehe `pn532_uart.c`), der Broadcast wird trotzdem gesendet, nur
 erkennt kein Geraet den Reader als "seinen".
 
+### `nfc/relay_pulse_ms` (Addon -> ESP32, retained, optional)
+
+```
+1500   (KEIN JSON -- reiner Zahl-String in Millisekunden als Payload, 50-10000)
+```
+
+Nur relevant, wenn ueber die WebGUI (siehe README) "Pulsdauer per MQTT
+setzen" aktiviert wurde -- dann abonniert die Firmware dieses Topic
+zusaetzlich und uebernimmt jeden gueltigen Wert sofort per
+`relay_control_set_pulse_ms()` (siehe `relay_control.c`), OHNE ihn in NVS zu
+persistieren. Werte ausserhalb 50-10000 oder nicht-numerische Payloads werden
+mit einer Log-Warnung ignoriert, der zuletzt gueltige Wert bleibt bestehen.
+Ist die Option deaktiviert (Standard), wird dieses Topic gar nicht erst
+abonniert und die feste, ueber die WebGUI konfigurierte Pulsdauer gilt.
+
+### `nfc/apdu_relay_timeout_ms` (Addon -> ESP32, retained)
+
+```
+3000   (KEIN JSON -- reiner Zahl-String in Millisekunden als Payload, 500-120000)
+```
+
+Steuert, wie lange `main.c:card_event_task()` zwischen APDU-Kommandos
+(bzw. seit Kartenerkennung) auf das naechste Kommando oder `nfc/result`
+wartet, bevor die Karte freigegeben wird. Anders als bei
+`nfc/relay_pulse_ms` gibt es hier **kein** Enable/Disable-Toggle -- das
+Topic ist immer abonniert, Standard ist 3000ms (passend fuer die schnelle
+Automatik-Zutrittslogik, wo Kommandos in Millisekunden folgen). Ungueltige
+Werte (ausserhalb 500-120000 oder nicht-numerisch) werden mit einer
+Log-Warnung ignoriert, der zuletzt gueltige Wert bleibt bestehen.
+
+Das Addon (nicht die WebGUI) steuert diesen Wert vollstaendig: z.B. hoch
+auf 30000-60000ms beim Oeffnen der interaktiven NFC-Shell (Mensch
+tippt/klickt zwischen Kommandos, das dauert laenger als Millisekunden),
+wieder runter auf 3000ms beim Schliessen. Wird NICHT in NVS persistiert --
+nach einem Reboot gilt wieder der Compile-Time-Default, bis das Addon den
+Wert erneut setzt (retained heisst hier nur: der Broker liefert ihn beim
+naechsten Verbindungsaufbau sofort nach, nicht dass die Firmware ihn selbst
+speichert).
+
 ### `nfc/result` (Addon -> ESP32, bereits vorhanden)
 
 Unveraendertes Format. Wird zusaetzlich als **Sessionende** interpretiert:
@@ -135,6 +174,29 @@ Karte ebenfalls zurueck -- das faellt aber nicht still unter den Tisch,
 sondern die Reader-Seite (homekey_lib/DESFireSession) erkennt die daraufhin
 nicht mehr passende Kryptoantwort der Karte zuverlaessig als Auth-Fehler statt
 sie faelschlich zu akzeptieren.
+
+## MIFARE Classic: Re-Selektion vor jedem nativen Kommando
+
+Auf echter Hardware reproduziert: identisches natives Auth-Kommando (`60`
++ Block + Key + UID) lieferte je nach Vorgeschichte abwechselnd Statusbyte
+`14` (Auth fehlgeschlagen) oder `00` (erfolgreich) -- auch wenn per
+externem Tool (`mfoc`) verifiziert war, dass der Key fuer den Sektor
+korrekt war. Ursache: ein vorher fehlgeschlagener Auth-Versuch (z.B. auf
+einem anderen Sektor mit falschem Key, etwa beim sektorweisen
+Durchprobieren via NFC-Shell) hinterlaesst die Karte in einem "verwirrten"
+Crypto1-Zustand, der auch nachfolgende, eigentlich korrekte Auth-Versuche
+mit `14` ablehnt -- bis die Karte sauber neu selektiert (HALT/WakeUp +
+Anticollision + SELECT) wird. `mfoc`/libnfc reselektieren aus demselben
+Grund vor jedem Dictionary-Versuch.
+
+Behoben in `pn532_data_exchange_ex()`: fuer `native=true` (MIFARE Classic)
+wird jetzt vor JEDEM Kommando per `pn532_reactivate_target()` frisch
+reselektiert, nicht mehr nur bei echten Kommunikationsfehlern. Fuer den
+ISO14443-4-Pfad (DESFire/HomeKey, `native=false`) bleibt das Verhalten
+unveraendert -- dort MUSS die Selektion ueber eine ganze APDU-Kette
+erhalten bleiben, eine Re-Selektion wuerde den kryptografischen
+Sitzungszustand (Auth0/Auth1 bei HomeKey, Session-Keys bei DESFire)
+zerstoeren.
 
 ## Offene Folgeschritte
 
