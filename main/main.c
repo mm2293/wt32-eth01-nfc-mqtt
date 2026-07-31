@@ -1,12 +1,23 @@
 /*
  * WT32-ETH01 NFC-Gateway: Hauptprogramm.
  *
- * Pollt kontinuierlich nach Karten (inkl. HomeKey-ECP-Broadcast zwischen den
- * Versuchen, siehe pn532_uart.c:pn532_poll_once()). Bei ISO14443-4-faehigen
- * Karten (DESFire, HomeKey) bleibt die Karte nach der Erkennung selektiert
- * und weitere APDUs werden per MQTT-Relay (nfc/apdu_cmd <-> nfc/apdu_resp)
- * mit dem Addon ausgetauscht, bis das Addon das Ergebnis (nfc/result)
- * veroeffentlicht.
+ * Zwei PN532-Modi (siehe app_config.h:pn532_raw_bridge_mode, umschaltbar
+ * per WebGUI + Neustart):
+ *
+ * - Managed (Default): pollt kontinuierlich nach Karten (inkl. HomeKey-
+ *   ECP-Broadcast zwischen den Versuchen, siehe pn532_uart.c:
+ *   pn532_poll_once()). Bei ISO14443-4-faehigen Karten (DESFire, HomeKey)
+ *   bleibt die Karte nach der Erkennung selektiert und weitere APDUs werden
+ *   per MQTT-Relay (nfc/apdu_cmd <-> nfc/apdu_resp) mit dem Addon
+ *   ausgetauscht, bis das Addon das Ergebnis (nfc/result) veroeffentlicht.
+ *
+ * - Raw-Bridge: kein eigenes Polling/APDU-Relay -- die PN532-UART wird
+ *   stattdessen 1:1 als TCP-Server exponiert (siehe pn532_bridge.c), fuer
+ *   direkten Zugriff durch das Addon/externe Tools (mfoc, libnfc, ...).
+ *
+ * In BEIDEN Modi unveraendert: Relaissteuerung per MQTT (nfc/result /
+ * relay_pulse_ms, siehe mqtt_client_setup.c/relay_control.c) und die
+ * Mini-WebGUI (web_config.c).
  */
 
 #include <stdio.h>
@@ -21,6 +32,7 @@
 
 #include "ethernet_setup.h"
 #include "pn532_uart.h"
+#include "pn532_bridge.h"
 #include "relay_control.h"
 #include "mqtt_client_setup.h"
 #include "app_config.h"
@@ -154,11 +166,31 @@ static void pn532_init_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "Starte PN532-Initialisierung...");
 
-    // 1. UART-Treiber initialisieren
+    // 1. UART-Treiber initialisieren -- in BEIDEN Modi noetig (Managed und
+    // Raw-Bridge greifen auf dieselbe UART zu, siehe pn532_bridge.c).
     pn532_uart_init();
 
-    // 2. SAM-Konfiguration durchführen
-    ESP_LOGI(TAG, "Konfiguriere PN532 SAM...");
+    // Eigenstaendig geladen (statt cfg aus app_main() durchzureichen): cfg
+    // in app_main() liegt auf dessen Task-Stack, der nach Rueckkehr von
+    // app_main() freigegeben wird -- ein Pointer darauf waere hier ungueltig.
+    app_config_t cfg;
+    app_config_load(&cfg);
+
+    if (cfg.pn532_raw_bridge_mode) {
+        ESP_LOGI(TAG, "PN532-Modus: Raw-Bridge -- kein Polling/APDU-Relay, "
+                      "PN532-UART wird 1:1 als TCP-Server exponiert (Port %u)",
+                 cfg.pn532_bridge_tcp_port);
+        esp_err_t err = pn532_bridge_start(cfg.pn532_bridge_tcp_port);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "pn532_bridge_start fehlgeschlagen (Fehler %d)", err);
+        }
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // 2. SAM-Konfiguration durchführen (Managed-Modus, Default -- bisheriges
+    // Verhalten unveraendert)
+    ESP_LOGI(TAG, "PN532-Modus: Managed. Konfiguriere PN532 SAM...");
     while (pn532_sam_configuration() != ESP_OK) {
         ESP_LOGW(TAG, "PN532 antwortet nicht, erneuter Versuch in 3s...");
         vTaskDelay(pdMS_TO_TICKS(3000));

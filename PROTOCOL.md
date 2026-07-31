@@ -4,7 +4,37 @@ Gegenstueck im Addon: `nfc_access_control/app/mqtt_bridge.py` (APDU-Relay
 angebunden) und `.../hap_accessory.py` + `.../modules/homekey_service.py`
 (HAP-Pairing, siehe ha-nfc-addon-Repo).
 
-## Topics
+## PN532-Modus: Managed vs. Raw-Bridge
+
+Die Firmware kennt zwei sich gegenseitig ausschliessende PN532-Modi
+(`app_config.h:pn532_raw_bridge_mode`, per WebGUI umschaltbar, Aenderung
+wird erst nach einem Neustart wirksam -- siehe `main.c:pn532_init_task()`):
+
+- **Managed** (Default): wie im Rest dieses Dokuments beschrieben -- die
+  Firmware pollt selbst nach Karten und tauscht HomeKey/DESFire-APDUs per
+  MQTT-Relay (`nfc/raw`/`nfc/apdu_cmd`/`nfc/apdu_resp`/`nfc/result`) mit dem
+  Addon aus. Automatische Zutrittssteuerung funktioniert nur in diesem
+  Modus.
+- **Raw-Bridge**: die Firmware pollt NICHT selbst und sendet kein
+  `SAMConfiguration`. Stattdessen exponiert `pn532_bridge.c` die PN532-UART
+  byte-transparent als TCP-Server (Port aus `app_config.h:
+  pn532_bridge_tcp_port`, Default 4444) -- keine Interpretation der Bytes,
+  reine Bruecke, ein Client gleichzeitig. Gedacht fuer direkten Zugriff
+  durch das Addon (per `socat` auf ein lokales PTY gelegt, siehe
+  `ha-nfc-addon/nfc_access_control/app/raw_bridge_manager.py`) mit
+  Standard-NFC-Tools (`mfoc`, `libnfc`/`nfc-list`, `nfc-mfclassic`, ...),
+  die den PN532 wie an einem echten seriellen Anschluss ansprechen. Die
+  Topics `nfc/raw`/`nfc/apdu_cmd`/`nfc/apdu_resp`/`nfc/homekey_group_id`
+  sowie `nfc/apdu_relay_timeout_ms` sind in diesem Modus ohne Funktion
+  (niemand publiziert/konsumiert sie mehr).
+
+In BEIDEN Modi unveraendert aktiv: Relaissteuerung per MQTT
+(`nfc/result`/`nfc/relay_pulse_ms`) und die Mini-WebGUI. Da PN532/UART nur
+einen Master gleichzeitig erlauben, ist Raw-Bridge als manueller/temporaerer
+Wartungsmodus gedacht (Kartenanalyse, Key-Recovery per `mfoc`, ...), nicht
+als Dauerbetrieb parallel zur Zutrittssteuerung.
+
+## Topics (nur im Managed-Modus relevant)
 
 ### `nfc/raw` (ESP32 -> Addon)
 

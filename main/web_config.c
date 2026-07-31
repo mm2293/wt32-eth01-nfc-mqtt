@@ -197,7 +197,7 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     // Ein einzelner malloc-Puffer fuer die zusammengesetzte Seite --
     // deutlich einfacher als httpd_resp_sendstr_chunk-Ketten, und der Server
     // laeuft ohnehin nur auf Menschen-Anfrage, nicht im NFC-Hotpath.
-    size_t html_cap = 10240;
+    size_t html_cap = 11776;
     char *html = malloc(html_cap);
     if (html == NULL) {
         httpd_resp_send_500(req);
@@ -263,6 +263,18 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "</div>"
         "</fieldset>"
 
+        "<fieldset><legend>PN532-Modus</legend>"
+        "<label><input type=\"checkbox\" name=\"pn532_raw\" %s> Raw-Bridge statt Managed</label>"
+        "<p style=\"font-size:.85em;color:#555\">Managed (Standard, unmarkiert): die Firmware pollt selbst nach "
+        "Karten und relayt HomeKey/DESFire-APDUs per MQTT -- Zutrittssteuerung/Lernmodus funktionieren normal. "
+        "Raw-Bridge (markiert): kein Kartenpolling mehr, die PN532-UART wird stattdessen 1:1 als TCP-Server "
+        "exponiert, fuer direkten Zugriff durch das Addon/externe Tools (mfoc, libnfc, ...). In diesem Modus "
+        "ist die automatische Zutrittssteuerung ueber diesen Reader inaktiv. Relaissteuerung per MQTT bleibt in "
+        "BEIDEN Modi unveraendert aktiv. Eine Aenderung wird erst nach dem Neustart wirksam.</p>"
+        "<label>Bridge TCP-Port (nur im Raw-Bridge-Modus relevant)"
+        "<input type=\"number\" name=\"pn532_port\" value=\"%u\" min=\"1\" max=\"65535\"></label>"
+        "</fieldset>"
+
         "<fieldset><legend>WebGUI-Login</legend>"
         "<label>Admin-Passwort<input type=\"text\" name=\"admin_pass\" value=\"%s\"></label>"
         "</fieldset>"
@@ -299,7 +311,9 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "}"
         "</script>"
         "</body></html>",
-        cfg.relay_pulse_via_mqtt ? "checked" : "", cfg.relay_pulse_ms, e_t_relay_ms, e_admin_pass,
+        cfg.relay_pulse_via_mqtt ? "checked" : "", cfg.relay_pulse_ms, e_t_relay_ms,
+        cfg.pn532_raw_bridge_mode ? "checked" : "", (unsigned)cfg.pn532_bridge_tcp_port,
+        e_admin_pass,
         ota_info);
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
@@ -378,6 +392,16 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     form_get(body, "admin_pass", admin_pass, sizeof(admin_pass));
     if (admin_pass[0] != '\0') {
         strncpy(cfg.admin_password, admin_pass, sizeof(cfg.admin_password) - 1);
+    }
+
+    cfg.pn532_raw_bridge_mode = form_get_bool(body, "pn532_raw");
+    char pn532_port_str[8];
+    form_get(body, "pn532_port", pn532_port_str, sizeof(pn532_port_str));
+    if (pn532_port_str[0] != '\0') {
+        long v = strtol(pn532_port_str, NULL, 10);
+        if (v >= 1 && v <= 65535) {
+            cfg.pn532_bridge_tcp_port = (uint16_t)v;
+        }
     }
 
     free(body);

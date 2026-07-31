@@ -6,6 +6,7 @@
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "driver/uart.h"
 
 typedef struct {
     uint8_t uid[10];
@@ -18,6 +19,11 @@ typedef struct {
 
 esp_err_t pn532_uart_init(void);
 esp_err_t pn532_sam_configuration(void);
+
+/* Liefert den UART-Port, auf dem der PN532 haengt (siehe pn532_uart_init()).
+ * Fuer pn532_bridge.c (Raw-Bridge-Modus), das direkt Rohbytes lesen/
+ * schreiben will, ohne die Protokoll-Engine dieses Moduls zu benutzen. */
+uart_port_t pn532_uart_get_port(void);
 
 /* Setzt die 8-Byte HomeKey Reader-Group-Identifier, die im ECP-Broadcast-Frame
  * gesendet wird (siehe homekey_lib/util/ecp.py:ECP.home() im Addon). Solange
