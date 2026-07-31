@@ -17,3 +17,13 @@ CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
 # Basic-Auth-Header der WebGUI) -- fuehrte zu "431 Request Header Fields Too
 # Large" schon beim blossen Aufrufen von http://<geraet-ip>/.
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=4096
+
+# ESP-IDF-Default (100Hz = 10ms Tick-Aufloesung) macht pdMS_TO_TICKS() fuer
+# Millisekunden-Werte unter 10ms zu 0 (Ganzzahl-Rundung nach unten) -- damit
+# wird ein kurzer Timeout wie BRIDGE_POLL_MS=2 in pn532_bridge.c faktisch zu
+# einem non-blocking Aufruf (0 Ticks Wartezeit) statt der beabsichtigten 2ms
+# Wartezeit, was pump_bytes() in eine CPU-fressende Busy-Loop verwandelt (auf
+# echter Hardware reproduziert: Raw-Bridge fand nach der Aenderung keine
+# Karte mehr). Mit 1000Hz entspricht 1 Tick 1ms, wie pdMS_TO_TICKS() das
+# erwartet.
+CONFIG_FREERTOS_HZ=1000
