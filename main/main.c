@@ -180,6 +180,12 @@ static void pn532_init_task(void *pvParameters)
         ESP_LOGI(TAG, "PN532-Modus: Raw-Bridge -- kein Polling/APDU-Relay, "
                       "PN532-UART wird 1:1 als TCP-Server exponiert (Port %u)",
                  cfg.pn532_bridge_tcp_port);
+        // MQTT wird in diesem Modus nicht genutzt (kein Kartenpolling, siehe
+        // unten) -- der esp-mqtt-Task liefe sonst mit gleicher Prioritaet wie
+        // bridge_server_task weiter und koennte dessen zeitkritisches
+        // Byte-Pumping fuer mfocs Nested-Attack verzoegern (siehe
+        // mqtt_client_setup.h:mqtt_client_setup_stop()).
+        mqtt_client_setup_stop();
         esp_err_t err = pn532_bridge_start(cfg.pn532_bridge_tcp_port);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "pn532_bridge_start fehlgeschlagen (Fehler %d)", err);
