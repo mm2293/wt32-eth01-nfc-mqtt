@@ -338,15 +338,6 @@ esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, c
     return esp_mqtt_client_start(s_mqtt_client);
 }
 
-void mqtt_client_setup_stop(void)
-{
-    if (s_mqtt_client == NULL) {
-        return;
-    }
-    ESP_LOGI(TAG, "Stoppe MQTT-Client (Raw-Bridge-Modus, siehe mqtt_client_setup.h)");
-    esp_mqtt_client_stop(s_mqtt_client);
-}
-
 void mqtt_client_setup_publish_card(const uint8_t *uid, uint8_t uid_len, uint8_t sak,
                                      const uint8_t atqa[2], uint32_t session_id, bool iso14443_4)
 {
