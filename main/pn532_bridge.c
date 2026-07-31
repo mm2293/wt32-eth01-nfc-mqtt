@@ -125,6 +125,17 @@ static void bridge_server_task(void *pvParameters)
         inet_ntoa_r(client_addr.sin_addr, ip_str, sizeof(ip_str));
         ESP_LOGI(TAG, "Client verbunden: %s:%d", ip_str, ntohs(client_addr.sin_port));
 
+        // Nagle deaktivieren: mfocs Nested-Attack ist auf enges Timing
+        // zwischen aufeinanderfolgenden Auth-Kommandos angewiesen (siehe
+        // raw_bridge_manager.py im ha-nfc-addon-Repo) -- die Verzoegerung,
+        // die Nagle+Delayed-ACK sonst je nach Paketgroesse einstreut, reicht
+        // aus, um den Nonce-Request beim Sektor-Angriff scheitern zu lassen
+        // ("Error requesting encrypted tag-nonce").
+        int nodelay_opt = 1;
+        if (setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay_opt, sizeof(nodelay_opt)) != 0) {
+            ESP_LOGW(TAG, "setsockopt(TCP_NODELAY) fehlgeschlagen: errno=%d", errno);
+        }
+
         pump_bytes(client_fd);
 
         close(client_fd);
