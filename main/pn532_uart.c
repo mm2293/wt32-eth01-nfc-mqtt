@@ -64,7 +64,18 @@ static bool s_target_selected = false;
 // das reine FWT -- der PN532 bedient WTX-Anfragen der Karte chip-intern
 // transparent, aber nur innerhalb des Timeouts, das wir ihm hier mitgeben.
 #define PN532_RESPONSE_TIMEOUT_WTX_MARGIN_FACTOR 4
-#define PN532_RESPONSE_TIMEOUT_MIN_MS   200
+// War 200ms -- auf echter Hardware beobachtet: der HomeKey-STANDARD-Auth-
+// Flow (AUTH1, siehe homekey_lib/homekey.py:standard_auth()) verlangt vom
+// iPhone eine ECDSA-Signatur (Secure-Enclave-Operation), die deutlich laenger
+// dauert als das reine ISO14443-4-Frame-Waiting-Time einer Karte mit
+// niedrigem FWI (z.B. FWI=7 -> errechnete 200ms) abdeckt. Das PN532-Chip
+// bedient WTX-Verlaengerungen zwar chip-intern transparent, aber nur
+// innerhalb des hier vorgegebenen Gesamt-Timeouts -- 200ms reichten dafuer
+// nicht, AUTH1 schlug reproduzierbar mit "Timeout, target did not answer"
+// fehl. 1500ms als Untergrenze laesst der Karte/dem Telefon genug Zeit,
+// unabhaengig vom (fuer App-Layer-Kryptografie ohnehin nicht aussagekraeftigen)
+// FWI-Wert.
+#define PN532_RESPONSE_TIMEOUT_MIN_MS   1500
 #define PN532_RESPONSE_TIMEOUT_MAX_MS   5000
 // Fallback, falls eine Karte kein TB(1) (und damit kein FWI) in ihrer ATS
 // mitliefert -- ISO14443-4 erlaubt das (Default FWI=4, ~4.8ms), das ist uns
