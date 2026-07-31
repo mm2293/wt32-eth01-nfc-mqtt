@@ -12,20 +12,7 @@
 
 static const char *TAG = "pn532_bridge";
 
-// War 512 -- versuchsweise verkleinert: MIFARE-Classic-Kommandos (Auth/Read/
-// Write), wie sie mfocs Nested-Attack in schneller Folge verschickt, passen
-// mit PN532-Rahmen-Overhead (Praeambel/Startcode/LEN/LCS/TFI/DCS/Postamble)
-// immer deutlich unter 64 Byte. Kleinerer Puffer aendert NICHT, ob ein
-// einzelner Rahmen ueber mehrere uart_read_bytes()/send()-Aufrufe verteilt
-// wird -- bei 115200 Baud kommen in den 2ms Poll-Intervall (BRIDGE_POLL_MS)
-// ohnehin nur ~23 Byte an, ein groesserer Rahmen wird also so oder so auf
-// mehrere Runden verteilt, ohne dass dabei Bytes verloren gehen (TCP/UART
-// sind geordnete Bytestroeme, kein gemeinsam genutzter Zustand zwischen den
-// Runden). Diese Aenderung ist daher mit geringer Erwartung eingebaut, dass
-// sie den "Reader-answer transfer error" behebt (siehe PROTOCOL.md/History) --
-// falls sich am Fehlerbild nichts aendert, liegt die Ursache mit hoher
-// Wahrscheinlichkeit nicht an der Puffergroesse.
-#define BRIDGE_BUF_SIZE 64
+#define BRIDGE_BUF_SIZE 512
 // Kurze Poll-Timeouts auf beiden Seiten (UART-Read, select() auf dem Socket)
 // statt langem Blockieren -- damit ein Verbindungsabbruch zuegig erkannt und
 // der Server-Loop fuer den naechsten Client wieder frei wird. Vormals 50ms:
