@@ -159,6 +159,24 @@ static uint8_t form_get_qos(const char *body, const char *key, uint8_t dflt)
     return (uint8_t)v;
 }
 
+// Liest eine GPIO-Pin-Auswahl aus einem <select>-Feld; fehlende/ausserhalb
+// des Pools liegende (und, falls require_output, Input-only-) Werte fallen
+// auf dflt zurueck. Duplikate ueber mehrere Rollen hinweg werden hier NICHT
+// erkannt -- das passiert erst nach dem Einlesen aller fuenf GPIO-Felder,
+// siehe save_post_handler().
+static uint8_t form_get_gpio(const char *body, const char *key, uint8_t dflt, bool require_output)
+{
+    char tmp[4];
+    form_get(body, key, tmp, sizeof(tmp));
+    if (tmp[0] == '\0') return dflt;
+    long v = strtol(tmp, NULL, 10);
+    if (v < 0 || v > 255) return dflt;
+    uint8_t pin = (uint8_t)v;
+    if (!app_config_gpio_in_pool(pin)) return dflt;
+    if (require_output && !app_config_gpio_supports_output(pin)) return dflt;
+    return pin;
+}
+
 // Liest ein Sekunden-Textfeld (ggf. mit Nachkommastellen) und liefert den
 // Wert in Millisekunden, geklemmt auf [min_ms, max_ms]. Liefert -1 (statt
 // eines uint32_t), wenn das Feld leer/ungueltig war, damit der Aufrufer den
@@ -197,6 +215,23 @@ static void render_qos_select(char *out, size_t out_cap, const char *name, uint8
         val == 2 ? " selected" : "");
 }
 
+// Baut ein <select> mit allen Pins aus APP_CFG_GPIO_POOL, aktueller Wert
+// vorausgewaehlt -- bei output_capable=true werden Input-only-Pins (IO39/
+// IO36) ausgelassen, da sie fuer diese Rolle (Relais, PN532-TX) nicht
+// waehlbar sind.
+static void render_gpio_select(char *out, size_t out_cap, const char *name, uint8_t val, bool output_capable)
+{
+    size_t pos = 0;
+    pos += snprintf(out + pos, out_cap - pos, "<select name=\"%s\">", name);
+    for (int i = 0; i < APP_CFG_GPIO_POOL_LEN; i++) {
+        uint8_t pin = APP_CFG_GPIO_POOL[i];
+        if (output_capable && !app_config_gpio_supports_output(pin)) continue;
+        pos += snprintf(out + pos, out_cap - pos, "<option value=\"%u\"%s>IO%u</option>",
+                         pin, pin == val ? " selected" : "", pin);
+    }
+    snprintf(out + pos, out_cap - pos, "</select>");
+}
+
 // -------------------- GET / : Formular anzeigen --------------------
 
 static esp_err_t index_get_handler(httpd_req_t *req)
@@ -213,7 +248,7 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     char e_uri[APP_CFG_STR_LEN * 2], e_user[APP_CFG_STR_LEN * 2], e_pass[APP_CFG_STR_LEN * 2], e_cid[APP_CFG_STR_LEN * 2];
     char e_t_raw[APP_CFG_STR_LEN * 2], e_t_cmd[APP_CFG_STR_LEN * 2], e_t_resp[APP_CFG_STR_LEN * 2];
     char e_t_result[APP_CFG_STR_LEN * 2], e_t_hk[APP_CFG_STR_LEN * 2];
-    char e_t_relay_ms[APP_CFG_STR_LEN * 2];
+    char e_t_relay_ms[APP_CFG_STR_LEN * 2], e_t_relaystate[APP_CFG_STR_LEN * 2];
     char e_t_reed[APP_CFG_STR_LEN * 2], e_t_lock_settle[APP_CFG_STR_LEN * 2];
     char e_admin_pass[APP_CFG_STR_LEN * 2];
 
@@ -232,6 +267,7 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     html_escape(cfg.topic_result, e_t_result, sizeof(e_t_result));
     html_escape(cfg.topic_homekey_group_id, e_t_hk, sizeof(e_t_hk));
     html_escape(cfg.topic_relay_pulse_ms, e_t_relay_ms, sizeof(e_t_relay_ms));
+    html_escape(cfg.topic_relay_state, e_t_relaystate, sizeof(e_t_relaystate));
     html_escape(cfg.topic_reed_state, e_t_reed, sizeof(e_t_reed));
     html_escape(cfg.topic_lock_settle_delay_ms, e_t_lock_settle, sizeof(e_t_lock_settle));
     html_escape(cfg.admin_password, e_admin_pass, sizeof(e_admin_pass));
@@ -247,7 +283,7 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     // aktueller Wert vorausgewaehlt.
     char sel_qos_raw[200], sel_qos_cmd[200], sel_qos_resp[200], sel_qos_result[200];
     char sel_qos_hk[200], sel_qos_relayms[200], sel_qos_timeout[200];
-    char sel_qos_reed[200], sel_qos_settle[200];
+    char sel_qos_reed[200], sel_qos_settle[200], sel_qos_relaystate[200];
     render_qos_select(sel_qos_raw, sizeof(sel_qos_raw), "qos_raw", cfg.qos_raw);
     render_qos_select(sel_qos_cmd, sizeof(sel_qos_cmd), "qos_cmd", cfg.qos_apdu_cmd);
     render_qos_select(sel_qos_resp, sizeof(sel_qos_resp), "qos_resp", cfg.qos_apdu_resp);
@@ -257,6 +293,16 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     render_qos_select(sel_qos_timeout, sizeof(sel_qos_timeout), "qos_timeout", cfg.qos_apdu_relay_timeout_ms);
     render_qos_select(sel_qos_reed, sizeof(sel_qos_reed), "qos_reed", cfg.qos_reed_state);
     render_qos_select(sel_qos_settle, sizeof(sel_qos_settle), "qos_settle", cfg.qos_lock_settle_ms);
+    render_qos_select(sel_qos_relaystate, sizeof(sel_qos_relaystate), "qos_relaystate", cfg.qos_relay_state);
+
+    // GPIO-Dropdowns fuer die frei zuweisbaren Funktionen.
+    char sel_gpio_relay[400], sel_gpio_reed[400], sel_gpio_switch[400];
+    char sel_gpio_pn532_tx[400], sel_gpio_pn532_rx[400];
+    render_gpio_select(sel_gpio_relay, sizeof(sel_gpio_relay), "gpio_relay", cfg.gpio_relay, true);
+    render_gpio_select(sel_gpio_reed, sizeof(sel_gpio_reed), "gpio_reed", cfg.gpio_reed, false);
+    render_gpio_select(sel_gpio_switch, sizeof(sel_gpio_switch), "gpio_switch", cfg.gpio_switch, false);
+    render_gpio_select(sel_gpio_pn532_tx, sizeof(sel_gpio_pn532_tx), "gpio_pn532_tx", cfg.gpio_pn532_tx, true);
+    render_gpio_select(sel_gpio_pn532_rx, sizeof(sel_gpio_pn532_rx), "gpio_pn532_rx", cfg.gpio_pn532_rx, false);
 
     // Diagnose-Info fuer das OTA-Fieldset: aktuell laufende Partition und ob
     // ueberhaupt eine zweite OTA-Partition (siehe partitions.csv) vorhanden
@@ -279,9 +325,9 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     // Ein einzelner malloc-Puffer fuer die zusammengesetzte Seite --
     // deutlich einfacher als httpd_resp_sendstr_chunk-Ketten, und der Server
     // laeuft ohnehin nur auf Menschen-Anfrage, nicht im NFC-Hotpath.
-    // War 11776 -- reicht seit den QoS/Retain-Dropdowns je Topic und dem
-    // Reedkontakt/Schloss-Feldset nicht mehr.
-    size_t html_cap = 24576;
+    // War 11776 -- reicht seit den QoS/Retain-Dropdowns je Topic, dem
+    // Reedkontakt/Schloss-Feldset und der GPIO-Zuordnung nicht mehr.
+    size_t html_cap = 28672;
     char *html = malloc(html_cap);
     if (html == NULL) {
         httpd_resp_send_500(req);
@@ -336,10 +382,29 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "</fieldset>",
         cfg.pn532_raw_bridge_mode ? "checked" : "", (unsigned)cfg.pn532_bridge_tcp_port);
 
-    char ret_raw_html[96], ret_resp_html[96], ret_reed_html[96];
+    used = strlen(html);
+    snprintf(html + used, html_cap - used,
+        "<fieldset><legend>GPIO-Zuordnung</legend>"
+        "<p style=\"font-size:.85em;color:#555\">Pin-Zuordnung fuer Relais, Reedkontakt, Schalter/Taster und "
+        "die PN532-UART. IO39/IO36 sind nur als Eingang nutzbar (kein Ausgangstreiber), daher bei Relais und "
+        "PN532-TX nicht waehlbar. Jeder Pin darf nur einer Funktion zugewiesen sein -- ein Speichern mit "
+        "doppelt vergebenem Pin wird abgelehnt, die vorherige Zuordnung bleibt dann unveraendert bestehen. "
+        "IO12 ist ein Boot-Strapping-Pin (Flash-Spannungsauswahl): nur mit internem Pull-Up verwenden "
+        "(Standard dieser Firmware fuer Reedkontakt/Schalter), keinen externen Pull-Up hinzufuegen. Eine "
+        "Aenderung wird erst nach dem Neustart wirksam.</p>"
+        "<div class=\"row\"><div><label>Relais (Ausgang)%s</label></div>"
+        "<div><label>Reedkontakt (Eingang)%s</label></div></div>"
+        "<div class=\"row\"><div><label>Schalter/Taster (Eingang, loest wie ein NFC-Zutritt aus)%s</label></div>"
+        "<div><label>PN532 TX (Ausgang, -&gt; PN532 RX)%s</label></div></div>"
+        "<label>PN532 RX (Eingang, PN532 TX -&gt;)%s</label>"
+        "</fieldset>",
+        sel_gpio_relay, sel_gpio_reed, sel_gpio_switch, sel_gpio_pn532_tx, sel_gpio_pn532_rx);
+
+    char ret_raw_html[96], ret_resp_html[96], ret_reed_html[96], ret_relaystate_html[96];
     snprintf(ret_raw_html, sizeof(ret_raw_html), "<span class=\"inline\"><input type=\"checkbox\" name=\"ret_raw\" %s> Retain</span>", cfg.retain_raw ? "checked" : "");
     snprintf(ret_resp_html, sizeof(ret_resp_html), "<span class=\"inline\"><input type=\"checkbox\" name=\"ret_resp\" %s> Retain</span>", cfg.retain_apdu_resp ? "checked" : "");
     snprintf(ret_reed_html, sizeof(ret_reed_html), "<span class=\"inline\"><input type=\"checkbox\" name=\"ret_reed\" %s> Retain</span>", cfg.retain_reed_state ? "checked" : "");
+    snprintf(ret_relaystate_html, sizeof(ret_relaystate_html), "<span class=\"inline\"><input type=\"checkbox\" name=\"ret_relaystate\" %s> Retain</span>", cfg.retain_relay_state ? "checked" : "");
 
     used = strlen(html);
     snprintf(html + used, html_cap - used,
@@ -395,8 +460,12 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "<p style=\"font-size:.85em;color:#555\">Kein festes Maximum mehr -- siehe Reedkontakt-Feldset unten: "
         "das Relais wird bei einem Zutrittsvorgang ohnehin so lange gehalten, wie es das Schloss laut "
         "Reedkontakt braucht, unabhaengig von dieser Basis-Pulsdauer.</p>"
+        "<label>Topic: Relais-Status (ESP32 -&gt; Addon, retained, Payload \"on\"/\"off\")"
+        "<input type=\"text\" name=\"t_relaystate\" value=\"%s\"></label>"
+        "<div class=\"qosrow\"><label>QoS %s</label>%s</div>"
         "</fieldset>",
-        cfg.relay_pulse_via_mqtt ? "checked" : "", sec_relay, e_t_relay_ms, sel_qos_relayms);
+        cfg.relay_pulse_via_mqtt ? "checked" : "", sec_relay, e_t_relay_ms, sel_qos_relayms,
+        e_t_relaystate, sel_qos_relaystate, ret_relaystate_html);
 
     used = strlen(html);
     snprintf(html + used, html_cap - used,
@@ -540,10 +609,12 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     cfg.qos_apdu_relay_timeout_ms = form_get_qos(body, "qos_timeout", cfg.qos_apdu_relay_timeout_ms);
     cfg.qos_reed_state = form_get_qos(body, "qos_reed", cfg.qos_reed_state);
     cfg.qos_lock_settle_ms = form_get_qos(body, "qos_settle", cfg.qos_lock_settle_ms);
+    cfg.qos_relay_state = form_get_qos(body, "qos_relaystate", cfg.qos_relay_state);
 
     cfg.retain_raw = form_get_bool(body, "ret_raw");
     cfg.retain_apdu_resp = form_get_bool(body, "ret_resp");
     cfg.retain_reed_state = form_get_bool(body, "ret_reed");
+    cfg.retain_relay_state = form_get_bool(body, "ret_relaystate");
 
     form_get(body, "t_reed", cfg.topic_reed_state, sizeof(cfg.topic_reed_state));
     if (cfg.topic_reed_state[0] == '\0') {
@@ -559,6 +630,11 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     long relay_ms = form_get_seconds_as_ms(body, "relay_sec", RELAY_PULSE_MS_MIN, RELAY_PULSE_MS_MAX);
     if (relay_ms >= 0) {
         cfg.relay_pulse_ms = (uint32_t)relay_ms;
+    }
+
+    form_get(body, "t_relaystate", cfg.topic_relay_state, sizeof(cfg.topic_relay_state));
+    if (cfg.topic_relay_state[0] == '\0') {
+        strncpy(cfg.topic_relay_state, "nfc/relay_state", sizeof(cfg.topic_relay_state) - 1);
     }
 
     cfg.lock_settle_delay_via_mqtt = form_get_bool(body, "lock_settle_mqtt");
@@ -586,6 +662,39 @@ static esp_err_t save_post_handler(httpd_req_t *req)
         if (v >= 1 && v <= 65535) {
             cfg.pn532_bridge_tcp_port = (uint16_t)v;
         }
+    }
+
+    // GPIO-Zuordnung: erst alle fuenf neuen Werte einzeln gegen den Pool/
+    // die Ausgangsfaehigkeit pruefen (form_get_gpio() faellt bei ungueltigen
+    // Werten je einzeln auf den bisherigen Wert zurueck), dann als Ganzes
+    // auf Duplikate zwischen den Rollen pruefen -- bei einem Konflikt bleibt
+    // die GESAMTE bisherige Zuordnung unveraendert (kein Teil-Uebernehmen),
+    // damit nie zwei Funktionen denselben Pin belegen.
+    uint8_t new_gpio_relay = form_get_gpio(body, "gpio_relay", cfg.gpio_relay, true);
+    uint8_t new_gpio_reed = form_get_gpio(body, "gpio_reed", cfg.gpio_reed, false);
+    uint8_t new_gpio_switch = form_get_gpio(body, "gpio_switch", cfg.gpio_switch, false);
+    uint8_t new_gpio_pn532_tx = form_get_gpio(body, "gpio_pn532_tx", cfg.gpio_pn532_tx, true);
+    uint8_t new_gpio_pn532_rx = form_get_gpio(body, "gpio_pn532_rx", cfg.gpio_pn532_rx, false);
+
+    uint8_t new_gpios[5] = {new_gpio_relay, new_gpio_reed, new_gpio_switch, new_gpio_pn532_tx, new_gpio_pn532_rx};
+    bool gpio_conflict = false;
+    for (int i = 0; i < 5 && !gpio_conflict; i++) {
+        for (int j = i + 1; j < 5; j++) {
+            if (new_gpios[i] == new_gpios[j]) {
+                gpio_conflict = true;
+                break;
+            }
+        }
+    }
+
+    if (gpio_conflict) {
+        ESP_LOGW(TAG, "GPIO-Zuordnung mit doppelt vergebenem Pin ignoriert, vorherige Zuordnung bleibt bestehen");
+    } else {
+        cfg.gpio_relay = new_gpio_relay;
+        cfg.gpio_reed = new_gpio_reed;
+        cfg.gpio_switch = new_gpio_switch;
+        cfg.gpio_pn532_tx = new_gpio_pn532_tx;
+        cfg.gpio_pn532_rx = new_gpio_pn532_rx;
     }
 
     free(body);

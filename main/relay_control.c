@@ -1,7 +1,7 @@
 /*
  * Relais-Ansteuerung ueber einen einfachen GPIO-Ausgang.
- * Pin frei waehlbar aus den ungenutzten IOs laut Pinout-Diagramm
- * (z.B. IO4, IO5, IO12, IO14, IO15) - hier IO4 als Beispiel gewaehlt.
+ * Pin ueber die WebGUI aus app_config.h:APP_CFG_GPIO_POOL waehlbar
+ * (siehe relay_control_init()), Default IO4.
  */
 
 #include "relay_control.h"
@@ -12,20 +12,23 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "mqtt_client_setup.h"
+
 static const char *TAG = "relay_control";
 
-#define RELAY_GPIO_PIN   GPIO_NUM_4
+static gpio_num_t s_relay_pin = GPIO_NUM_4;
 
 // Ueber die WebGUI konfigurierbar (siehe relay_control_init()), Default war
 // vormals fest 1500ms -- kurzer Impuls zur Vermeidung von Ueberhitzung der Spule.
 static uint32_t s_relay_pulse_ms = 1500;
 
-esp_err_t relay_control_init(uint32_t pulse_ms)
+esp_err_t relay_control_init(uint32_t pulse_ms, gpio_num_t pin)
 {
     s_relay_pulse_ms = pulse_ms;
+    s_relay_pin = pin;
 
     gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << RELAY_GPIO_PIN),
+        .pin_bit_mask = (1ULL << s_relay_pin),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_ENABLE,  // definierter LOW-Zustand beim Start
@@ -33,16 +36,17 @@ esp_err_t relay_control_init(uint32_t pulse_ms)
     };
     esp_err_t err = gpio_config(&io_conf);
     if (err == ESP_OK) {
-        gpio_set_level(RELAY_GPIO_PIN, 0);
-        ESP_LOGI(TAG, "Relais-GPIO initialisiert (Pin %d, Puls %" PRIu32 "ms)", RELAY_GPIO_PIN, s_relay_pulse_ms);
+        gpio_set_level(s_relay_pin, 0);
+        ESP_LOGI(TAG, "Relais-GPIO initialisiert (Pin %d, Puls %" PRIu32 "ms)", s_relay_pin, s_relay_pulse_ms);
     }
     return err;
 }
 
 void relay_control_set(bool energized)
 {
-    gpio_set_level(RELAY_GPIO_PIN, energized ? 1 : 0);
+    gpio_set_level(s_relay_pin, energized ? 1 : 0);
     ESP_LOGI(TAG, "Relais %s", energized ? "aktiviert" : "deaktiviert");
+    mqtt_client_setup_publish_relay_state(energized);
 }
 
 void relay_control_set_pulse_ms(uint32_t pulse_ms)

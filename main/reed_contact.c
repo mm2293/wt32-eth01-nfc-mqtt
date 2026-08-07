@@ -1,14 +1,13 @@
 /*
  * Reedkontakt am Schloss (Tuer-/Schlossstatus: geschlossen/geoeffnet).
  *
- * Verdrahtung: 2-Draht-Reedkontakt zwischen IO2 und GND, IO2 als Input mit
- * internem Pull-Up konfiguriert -- geschlossener Kontakt (Magnet in
- * Reichweite) zieht IO2 auf LOW, offener Kontakt laesst IO2 durch den
- * Pull-Up auf HIGH.
+ * Verdrahtung: 2-Draht-Reedkontakt zwischen dem konfigurierten Pin und GND,
+ * Pin als Input mit internem Pull-Up konfiguriert -- geschlossener Kontakt
+ * (Magnet in Reichweite) zieht den Pin auf LOW, offener Kontakt laesst ihn
+ * durch den Pull-Up auf HIGH.
  *
- * IO4 ist bereits fuers Relais reserviert (siehe relay_control.c), IO2 ist
- * laut Pinout-Diagramm frei und wird von keinem anderen Modul verwendet
- * (das Keypad-Grundgerüst in keypad.c wird nirgends aufgerufen).
+ * Pin ueber die WebGUI aus app_config.h:APP_CFG_GPIO_POOL waehlbar (siehe
+ * reed_contact_init()), Default IO2.
  */
 
 #include "reed_contact.h"
@@ -22,12 +21,13 @@
 
 static const char *TAG = "reed_contact";
 
-#define REED_GPIO_PIN              GPIO_NUM_2
 #define REED_POLL_INTERVAL_MS      50
 // 3 aufeinanderfolgende stabile Polls (150ms) muessen denselben Pegel
 // liefern, bevor ein Statuswechsel als echt gilt -- Prellen des mechanischen
 // Kontakts beim Oeffnen/Schliessen wird so gefiltert (analog keypad.c).
 #define REED_DEBOUNCE_STABLE_POLLS 3
+
+static gpio_num_t s_reed_pin = GPIO_NUM_2;
 
 // Von reed_contact_is_closed() gelesen -- bool-Zugriffe sind auf ESP32
 // atomar (1-Byte), kein Mutex noetig fuer diesen einfachen Cross-Task-Read.
@@ -40,7 +40,7 @@ static void reed_contact_task(void *pvParameters)
     int candidate_count = 0;
 
     while (1) {
-        int level = gpio_get_level(REED_GPIO_PIN);
+        int level = gpio_get_level(s_reed_pin);
 
         if (level == candidate_level) {
             candidate_count++;
@@ -69,10 +69,12 @@ bool reed_contact_is_closed(void)
     return s_reed_closed;
 }
 
-esp_err_t reed_contact_init(void)
+esp_err_t reed_contact_init(gpio_num_t pin)
 {
+    s_reed_pin = pin;
+
     gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << REED_GPIO_PIN),
+        .pin_bit_mask = (1ULL << s_reed_pin),
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -84,6 +86,6 @@ esp_err_t reed_contact_init(void)
     }
 
     xTaskCreate(reed_contact_task, "reed_contact", 3072, NULL, 4, NULL);
-    ESP_LOGI(TAG, "Reedkontakt initialisiert (Pin %d)", REED_GPIO_PIN);
+    ESP_LOGI(TAG, "Reedkontakt initialisiert (Pin %d)", s_reed_pin);
     return ESP_OK;
 }

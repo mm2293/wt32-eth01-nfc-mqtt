@@ -17,6 +17,20 @@
 #define APP_CFG_STR_LEN   64
 #define APP_CFG_IP_LEN    16
 
+// GPIO-Pool fuer frei zuweisbare Funktionen (Relais, Reedkontakt, Schalter,
+// PN532 TX/RX) -- laut Pinout-Diagramm des WT32-ETH01 die nicht fest fuer
+// Ethernet/Flash/Boot/USB-Log reservierten, herausgefuehrten Pins. IO39 und
+// IO36 sind Input-only (siehe app_config_gpio_supports_output()).
+#define APP_CFG_GPIO_POOL_LEN 8
+extern const uint8_t APP_CFG_GPIO_POOL[APP_CFG_GPIO_POOL_LEN];
+
+/* true, wenn pin Teil von APP_CFG_GPIO_POOL ist. */
+bool app_config_gpio_in_pool(uint8_t pin);
+
+/* true, wenn pin Teil von APP_CFG_GPIO_POOL UND als Ausgang nutzbar ist
+ * (also nicht IO39/IO36) -- fuer Relais und PN532-TX relevant. */
+bool app_config_gpio_supports_output(uint8_t pin);
+
 typedef struct {
     // Netzwerk
     bool     net_use_dhcp;
@@ -61,6 +75,7 @@ typedef struct {
     uint8_t  qos_relay_pulse_ms;
     uint8_t  qos_apdu_relay_timeout_ms;
     uint8_t  qos_reed_state;
+    uint8_t  qos_relay_state;
 
     // MQTT: Retain-Flag beim Publish -- nur fuer ESP32->Addon-Topics
     // relevant, bei Subscribe-only-Topics bestimmt der Publisher (Addon)
@@ -68,6 +83,7 @@ typedef struct {
     bool     retain_raw;
     bool     retain_apdu_resp;
     bool     retain_reed_state;
+    bool     retain_relay_state;
 
     // Relais
     uint32_t relay_pulse_ms;
@@ -78,8 +94,12 @@ typedef struct {
     bool     relay_pulse_via_mqtt;
     char     topic_relay_pulse_ms[APP_CFG_STR_LEN];
 
-    // Reedkontakt (Tuer-/Schlossstatus, siehe reed_contact.c). Fest
-    // verdrahtet auf IO2 (Input mit internem Pull-Up, Kontakt gegen GND --
+    // Relais-Zustand (ESP32 -> Addon, siehe relay_control.c). Publiziert
+    // retained bei jedem relay_control_set()-Aufruf, Payload "on"/"off".
+    char     topic_relay_state[APP_CFG_STR_LEN];
+
+    // Reedkontakt (Tuer-/Schlossstatus, siehe reed_contact.c). Pin ueber
+    // gpio_reed waehlbar (Input mit internem Pull-Up, Kontakt gegen GND --
     // geschlossen = LOW). Publiziert retained bei jedem Statuswechsel UND
     // einmalig beim Start, Payload "closed"/"open".
     char     topic_reed_state[APP_CFG_STR_LEN];
@@ -111,6 +131,17 @@ typedef struct {
     // Neustart (siehe main.c:app_main()).
     bool     pn532_raw_bridge_mode;
     uint16_t pn532_bridge_tcp_port;
+
+    // GPIO-Zuordnung, ueber die WebGUI aus APP_CFG_GPIO_POOL waehlbar
+    // (jeweils geprueft gegen app_config_gpio_in_pool()/
+    // app_config_gpio_supports_output(), Duplikate ueber alle fuenf Felder
+    // hinweg werden beim Speichern in der WebGUI abgelehnt). Eine Aenderung
+    // wird erst nach dem Neustart wirksam.
+    uint8_t  gpio_relay;      // Ausgang, Default IO4
+    uint8_t  gpio_reed;       // Eingang, Default IO2
+    uint8_t  gpio_switch;     // Eingang (Taster/manueller Oeffner), Default IO12
+    uint8_t  gpio_pn532_tx;   // Ausgang (ESP32 -> PN532 RX), Default IO14
+    uint8_t  gpio_pn532_rx;   // Eingang (PN532 TX -> ESP32), Default IO15
 } app_config_t;
 
 /* Laedt die Konfiguration aus NVS. Fehlende/noch nie gespeicherte Werte

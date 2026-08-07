@@ -20,6 +20,7 @@ static const char *NVS_NAMESPACE = "cfg";
 #define DEFAULT_TOPIC_HOMEKEY_GROUP_ID   "nfc/homekey_group_id"
 #define DEFAULT_RELAY_PULSE_MS   1500
 #define DEFAULT_TOPIC_RELAY_PULSE_MS     "nfc/relay_pulse_ms"
+#define DEFAULT_TOPIC_RELAY_STATE        "nfc/relay_state"
 #define DEFAULT_TOPIC_REED_STATE         "nfc/lock_reed_state"
 #define DEFAULT_LOCK_SETTLE_DELAY_MS      5000
 #define DEFAULT_TOPIC_LOCK_SETTLE_DELAY_MS "nfc/lock_settle_delay_ms"
@@ -40,9 +41,57 @@ static const char *NVS_NAMESPACE = "cfg";
 #define DEFAULT_QOS_RELAY_PULSE_MS        1
 #define DEFAULT_QOS_APDU_RELAY_TIMEOUT_MS 1
 #define DEFAULT_QOS_REED_STATE            1
+#define DEFAULT_QOS_RELAY_STATE           1
 #define DEFAULT_RETAIN_RAW                false
 #define DEFAULT_RETAIN_APDU_RESP          false
 #define DEFAULT_RETAIN_REED_STATE         true
+#define DEFAULT_RETAIN_RELAY_STATE        true
+
+// Default-GPIO-Zuordnung entspricht dem bisherigen fest kodierten Verhalten
+// (relay_control.c IO4, reed_contact.c IO2, pn532_uart.c TX=IO14/RX=IO15).
+// IO12 fuer den neuen Schalterkontakt ist bislang unbenutzt.
+#define DEFAULT_GPIO_RELAY      4
+#define DEFAULT_GPIO_REED       2
+#define DEFAULT_GPIO_SWITCH     12
+#define DEFAULT_GPIO_PN532_TX   14
+#define DEFAULT_GPIO_PN532_RX   15
+
+const uint8_t APP_CFG_GPIO_POOL[APP_CFG_GPIO_POOL_LEN] = {39, 36, 15, 14, 12, 5, 4, 2};
+
+bool app_config_gpio_in_pool(uint8_t pin)
+{
+    for (int i = 0; i < APP_CFG_GPIO_POOL_LEN; i++) {
+        if (APP_CFG_GPIO_POOL[i] == pin) return true;
+    }
+    return false;
+}
+
+bool app_config_gpio_supports_output(uint8_t pin)
+{
+    // IO39/IO36 sind am ESP32 Input-only (keine Ausgangstreiber vorhanden).
+    return app_config_gpio_in_pool(pin) && pin != 39 && pin != 36;
+}
+
+// Liest eine GPIO-Pin-Zuordnung; fehlende/ausserhalb des Pools liegende
+// Werte (und, falls require_output, Input-only-Pins IO39/IO36) fallen auf
+// dflt zurueck -- Duplikate ueber mehrere Funktionen hinweg werden hier NICHT
+// erkannt (das passiert beim Speichern in web_config.c), ein manuell
+// korrumpierter NVS-Eintrag fuehrt also bestenfalls zu falscher, nicht zu
+// undefinierter Pin-Nutzung.
+static uint8_t get_gpio(nvs_handle_t h, const char *key, uint8_t dflt, bool require_output)
+{
+    uint8_t v = dflt;
+    if (nvs_get_u8(h, key, &v) != ESP_OK) {
+        return dflt;
+    }
+    if (!app_config_gpio_in_pool(v)) {
+        return dflt;
+    }
+    if (require_output && !app_config_gpio_supports_output(v)) {
+        return dflt;
+    }
+    return v;
+}
 
 static void get_str(nvs_handle_t h, const char *key, char *out, size_t out_cap, const char *dflt)
 {
@@ -95,12 +144,15 @@ esp_err_t app_config_load(app_config_t *cfg)
         cfg->qos_relay_pulse_ms = DEFAULT_QOS_RELAY_PULSE_MS;
         cfg->qos_apdu_relay_timeout_ms = DEFAULT_QOS_APDU_RELAY_TIMEOUT_MS;
         cfg->qos_reed_state = DEFAULT_QOS_REED_STATE;
+        cfg->qos_relay_state = DEFAULT_QOS_RELAY_STATE;
         cfg->retain_raw = DEFAULT_RETAIN_RAW;
         cfg->retain_apdu_resp = DEFAULT_RETAIN_APDU_RESP;
         cfg->retain_reed_state = DEFAULT_RETAIN_REED_STATE;
+        cfg->retain_relay_state = DEFAULT_RETAIN_RELAY_STATE;
         cfg->relay_pulse_ms = DEFAULT_RELAY_PULSE_MS;
         cfg->relay_pulse_via_mqtt = false;
         strncpy(cfg->topic_relay_pulse_ms, DEFAULT_TOPIC_RELAY_PULSE_MS, sizeof(cfg->topic_relay_pulse_ms) - 1);
+        strncpy(cfg->topic_relay_state, DEFAULT_TOPIC_RELAY_STATE, sizeof(cfg->topic_relay_state) - 1);
         strncpy(cfg->topic_reed_state, DEFAULT_TOPIC_REED_STATE, sizeof(cfg->topic_reed_state) - 1);
         cfg->lock_settle_delay_ms = DEFAULT_LOCK_SETTLE_DELAY_MS;
         cfg->lock_settle_delay_via_mqtt = false;
@@ -109,6 +161,11 @@ esp_err_t app_config_load(app_config_t *cfg)
         strncpy(cfg->admin_password, DEFAULT_ADMIN_PASSWORD, sizeof(cfg->admin_password) - 1);
         cfg->pn532_raw_bridge_mode = DEFAULT_PN532_RAW_BRIDGE_MODE;
         cfg->pn532_bridge_tcp_port = DEFAULT_PN532_BRIDGE_TCP_PORT;
+        cfg->gpio_relay = DEFAULT_GPIO_RELAY;
+        cfg->gpio_reed = DEFAULT_GPIO_REED;
+        cfg->gpio_switch = DEFAULT_GPIO_SWITCH;
+        cfg->gpio_pn532_tx = DEFAULT_GPIO_PN532_TX;
+        cfg->gpio_pn532_rx = DEFAULT_GPIO_PN532_RX;
         return ESP_OK;
     }
 
@@ -145,6 +202,7 @@ esp_err_t app_config_load(app_config_t *cfg)
     cfg->qos_relay_pulse_ms = get_qos(h, "qos_relayms", DEFAULT_QOS_RELAY_PULSE_MS);
     cfg->qos_apdu_relay_timeout_ms = get_qos(h, "qos_timeout", DEFAULT_QOS_APDU_RELAY_TIMEOUT_MS);
     cfg->qos_reed_state = get_qos(h, "qos_reed", DEFAULT_QOS_REED_STATE);
+    cfg->qos_relay_state = get_qos(h, "qos_relaystate", DEFAULT_QOS_RELAY_STATE);
 
     uint8_t retain_raw_u8 = DEFAULT_RETAIN_RAW ? 1 : 0;
     nvs_get_u8(h, "ret_raw", &retain_raw_u8);
@@ -158,6 +216,10 @@ esp_err_t app_config_load(app_config_t *cfg)
     nvs_get_u8(h, "ret_reed", &retain_reed_u8);
     cfg->retain_reed_state = retain_reed_u8 != 0;
 
+    uint8_t retain_relaystate_u8 = DEFAULT_RETAIN_RELAY_STATE ? 1 : 0;
+    nvs_get_u8(h, "ret_relaystate", &retain_relaystate_u8);
+    cfg->retain_relay_state = retain_relaystate_u8 != 0;
+
     uint32_t pulse = DEFAULT_RELAY_PULSE_MS;
     nvs_get_u32(h, "relay_ms", &pulse);
     cfg->relay_pulse_ms = pulse;
@@ -166,6 +228,8 @@ esp_err_t app_config_load(app_config_t *cfg)
     nvs_get_u8(h, "relay_mqtt", &relay_mqtt_u8);
     cfg->relay_pulse_via_mqtt = relay_mqtt_u8 != 0;
     get_str(h, "t_relay_ms", cfg->topic_relay_pulse_ms, sizeof(cfg->topic_relay_pulse_ms), DEFAULT_TOPIC_RELAY_PULSE_MS);
+
+    get_str(h, "t_relaystate", cfg->topic_relay_state, sizeof(cfg->topic_relay_state), DEFAULT_TOPIC_RELAY_STATE);
 
     get_str(h, "t_reed", cfg->topic_reed_state, sizeof(cfg->topic_reed_state), DEFAULT_TOPIC_REED_STATE);
 
@@ -188,6 +252,12 @@ esp_err_t app_config_load(app_config_t *cfg)
     uint16_t bridge_port = DEFAULT_PN532_BRIDGE_TCP_PORT;
     nvs_get_u16(h, "pn532_port", &bridge_port);
     cfg->pn532_bridge_tcp_port = bridge_port;
+
+    cfg->gpio_relay = get_gpio(h, "gpio_relay", DEFAULT_GPIO_RELAY, true);
+    cfg->gpio_reed = get_gpio(h, "gpio_reed", DEFAULT_GPIO_REED, false);
+    cfg->gpio_switch = get_gpio(h, "gpio_switch", DEFAULT_GPIO_SWITCH, false);
+    cfg->gpio_pn532_tx = get_gpio(h, "gpio_pn532_tx", DEFAULT_GPIO_PN532_TX, true);
+    cfg->gpio_pn532_rx = get_gpio(h, "gpio_pn532_rx", DEFAULT_GPIO_PN532_RX, false);
 
     nvs_close(h);
     return ESP_OK;
@@ -230,14 +300,17 @@ esp_err_t app_config_save(const app_config_t *cfg)
     nvs_set_u8(h, "qos_relayms", cfg->qos_relay_pulse_ms);
     nvs_set_u8(h, "qos_timeout", cfg->qos_apdu_relay_timeout_ms);
     nvs_set_u8(h, "qos_reed", cfg->qos_reed_state);
+    nvs_set_u8(h, "qos_relaystate", cfg->qos_relay_state);
 
     nvs_set_u8(h, "ret_raw", cfg->retain_raw ? 1 : 0);
     nvs_set_u8(h, "ret_resp", cfg->retain_apdu_resp ? 1 : 0);
     nvs_set_u8(h, "ret_reed", cfg->retain_reed_state ? 1 : 0);
+    nvs_set_u8(h, "ret_relaystate", cfg->retain_relay_state ? 1 : 0);
 
     nvs_set_u32(h, "relay_ms", cfg->relay_pulse_ms);
     nvs_set_u8(h, "relay_mqtt", cfg->relay_pulse_via_mqtt ? 1 : 0);
     nvs_set_str(h, "t_relay_ms", cfg->topic_relay_pulse_ms);
+    nvs_set_str(h, "t_relaystate", cfg->topic_relay_state);
 
     nvs_set_str(h, "t_reed", cfg->topic_reed_state);
 
@@ -250,6 +323,12 @@ esp_err_t app_config_save(const app_config_t *cfg)
 
     nvs_set_u8(h, "pn532_raw", cfg->pn532_raw_bridge_mode ? 1 : 0);
     nvs_set_u16(h, "pn532_port", cfg->pn532_bridge_tcp_port);
+
+    nvs_set_u8(h, "gpio_relay", cfg->gpio_relay);
+    nvs_set_u8(h, "gpio_reed", cfg->gpio_reed);
+    nvs_set_u8(h, "gpio_switch", cfg->gpio_switch);
+    nvs_set_u8(h, "gpio_pn532_tx", cfg->gpio_pn532_tx);
+    nvs_set_u8(h, "gpio_pn532_rx", cfg->gpio_pn532_rx);
 
     err = nvs_commit(h);
     nvs_close(h);
