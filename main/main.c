@@ -266,7 +266,7 @@ void app_main(void)
     // beim ersten granted-Event auf beiden auf), vor dem PN532-Start --
     // Zutrittsvorgaenge (nfc/result) koennen ab dem MQTT-Connect jederzeit
     // eintreffen.
-    esp_err_t lock_err = lock_control_init(cfg.lock_settle_delay_ms, cfg.lock_max_hold_ms);
+    esp_err_t lock_err = lock_control_init(cfg.lock_settle_delay_ms);
     if (lock_err != ESP_OK) {
         ESP_LOGE(TAG, "Lock-Control-Init fehlgeschlagen (Fehler %d)", lock_err);
     }

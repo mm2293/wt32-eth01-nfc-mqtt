@@ -239,10 +239,9 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     // Sekunden-Anzeige (Textfelder erwarten Sekunden, nicht mehr ms -- die
     // Config selbst bleibt intern in ms, siehe app_config.h). "%.3f" erlaubt
     // bei Bedarf weiterhin ms-genaue Werte (z.B. 1.5s).
-    char sec_relay[24], sec_settle[24], sec_maxhold[24];
+    char sec_relay[24], sec_settle[24];
     snprintf(sec_relay, sizeof(sec_relay), "%.3f", cfg.relay_pulse_ms / 1000.0);
     snprintf(sec_settle, sizeof(sec_settle), "%.3f", cfg.lock_settle_delay_ms / 1000.0);
-    snprintf(sec_maxhold, sizeof(sec_maxhold), "%.3f", cfg.lock_max_hold_ms / 1000.0);
 
     // QoS-Dropdowns je Topic -- ein <select> pro konfigurierbarem Topic,
     // aktueller Wert vorausgewaehlt.
@@ -418,16 +417,11 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "<input type=\"text\" name=\"t_lock_settle\" value=\"%s\"></label>"
         "<div class=\"qosrow\"><label>QoS %s</label></div>"
         "</div>"
-        "<label>Sicherheits-Obergrenze fuers Halten (Sekunden, NICHT per MQTT ueberschreibbar)"
-        "<input type=\"number\" name=\"lock_maxhold_sec\" value=\"%s\" min=\"5\" step=\"1\"></label>"
-        "<p style=\"font-size:.85em;color:#555\">Schutz vor Spulen-/Motor-Ueberhitzung: bleibt der Reedkontakt "
-        "laenger als diese Zeit am Stueck \"nicht geschlossen\" (z.B. Tuer wird laenger aufgehalten), gibt die "
-        "Firmware das Relais TROTZDEM frei und loggt einen Fehler, statt die Spule endlos unter Strom zu "
-        "halten. Bewusst nicht per MQTT aenderbar, damit ein fehlerhaftes/kompromittiertes Addon diesen Schutz "
-        "nicht aushebeln kann.</p>"
+        "<p style=\"font-size:.85em;color:#555\">Kein zeitliches Limit fuers Halten -- das Relais bleibt aktiv, "
+        "bis der Reedkontakt wieder \"geschlossen\" meldet, egal wie lange die Tuer offen steht.</p>"
         "</fieldset>",
         e_t_reed, sel_qos_reed, ret_reed_html, cfg.lock_settle_delay_via_mqtt ? "checked" : "",
-        sec_settle, e_t_lock_settle, sel_qos_settle, sec_maxhold);
+        sec_settle, e_t_lock_settle, sel_qos_settle);
 
     used = strlen(html);
     snprintf(html + used, html_cap - used,
@@ -576,11 +570,6 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     long settle_ms = form_get_seconds_as_ms(body, "lock_settle_sec", LOCK_SETTLE_DELAY_MS_MIN, LOCK_SETTLE_DELAY_MS_MAX);
     if (settle_ms >= 0) {
         cfg.lock_settle_delay_ms = (uint32_t)settle_ms;
-    }
-
-    long maxhold_ms = form_get_seconds_as_ms(body, "lock_maxhold_sec", LOCK_MAX_HOLD_MS_MIN, LOCK_MAX_HOLD_MS_MAX);
-    if (maxhold_ms >= 0) {
-        cfg.lock_max_hold_ms = (uint32_t)maxhold_ms;
     }
 
     char admin_pass[APP_CFG_STR_LEN];

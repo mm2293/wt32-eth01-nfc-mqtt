@@ -97,11 +97,6 @@ typedef struct {
     bool     lock_settle_delay_via_mqtt;
     char     topic_lock_settle_delay_ms[APP_CFG_STR_LEN];
     uint8_t  qos_lock_settle_ms;
-    // Sicherheits-Obergrenze (siehe lock_control.h) -- bewusst NICHT per
-    // MQTT ueberschreibbar, nur ueber die WebGUI, damit ein fehlerhaftes/
-    // kompromittiertes Addon diesen Ueberhitzungsschutz nicht per MQTT
-    // aushebeln kann.
-    uint32_t lock_max_hold_ms;
 
     // WebGUI-Login (HTTP Basic Auth, Benutzername fix "admin")
     char     admin_password[APP_CFG_STR_LEN];

@@ -18,9 +18,10 @@ ueber die sich folgende, bislang fest kodierte Werte aendern lassen:
   `nfc/relay_pulse_ms`) -- kein festes Maximum mehr, siehe Reedkontakt/
   Schloss-Logik
 - Reedkontakt & Schloss-Logik: Topic fuer den Reedkontakt-Status
-  (`nfc/lock_reed_state`), Nachlaufzeit nach dem Wiederschliessen (fest oder
-  per MQTT, `nfc/lock_settle_delay_ms`) und eine Sicherheits-Obergrenze
-  fuers Halten (nur WebGUI, kein MQTT-Override) -- siehe PROTOCOL.md
+  (`nfc/lock_reed_state`) und Nachlaufzeit nach dem Wiederschliessen (fest
+  oder per MQTT, `nfc/lock_settle_delay_ms`) -- siehe PROTOCOL.md. Das
+  Relais bleibt dabei zeitlich unbegrenzt aktiv, solange der Reedkontakt
+  "nicht geschlossen" meldet.
 - PN532-Modus (Managed/Raw-Bridge): im Raw-Bridge-Modus blendet die WebGUI
   die dann wirkungslosen Managed-only-Felder automatisch aus
 - Das Admin-Passwort der WebGUI selbst

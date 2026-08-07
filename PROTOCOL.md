@@ -223,12 +223,9 @@ Steuert das Verhalten von `lock_control.c` nach einem gewaehrten Zutritt
 2. Danach bleibt das Relais WEITER aktiv, solange `nfc/lock_reed_state`
    "nicht geschlossen" meldet (z.B. weil die Tuer noch offen steht) -- das
    Schloss kann sonst mechanisch gar nicht in Schliessposition einrasten.
-   Sicherheits-Obergrenze dafuer: WebGUI-Feld "Sicherheits-Obergrenze fuers
-   Halten" (Default 5min, bewusst NICHT per MQTT ueberschreibbar, siehe
-   `LOCK_MAX_HOLD_MS_MIN/MAX` in `lock_control.h`) -- schuetzt Spule/Motor
-   vor Dauerbetrieb, falls die Tuer laenger aufgehalten wird. Wird die
-   Obergrenze erreicht, gibt die Firmware das Relais trotzdem frei und
-   loggt einen Fehler.
+   Zeitlich unbegrenzt: es gibt keine Sicherheits-Obergrenze mehr, die das
+   Relais zwangsweise freigibt. Bleibt die Tuer dauerhaft offen, bleibt das
+   Relais entsprechend dauerhaft aktiv.
 3. Sobald `nfc/lock_reed_state` wieder "closed" meldet, wartet die Firmware
    zusaetzlich `nfc/lock_settle_delay_ms` (diese Nachlaufzeit), bevor das
    Relais tatsaechlich deaktiviert wird. Geht der Reedkontakt waehrend

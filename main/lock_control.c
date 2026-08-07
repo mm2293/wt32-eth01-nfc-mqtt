@@ -18,21 +18,13 @@ static const char *TAG = "lock_control";
 
 static QueueHandle_t s_grant_queue = NULL;
 static uint32_t s_settle_delay_ms = 5000;
-static uint32_t s_max_hold_ms = 300000;
 
-// Wartet bis zu timeout_ms auf reed_contact_is_closed()==true.
-// Rueckgabe true: Reedkontakt ist (wieder) geschlossen.
-// Rueckgabe false: Timeout erreicht, Reedkontakt weiterhin nicht geschlossen.
-static bool wait_reed_closed_with_timeout(uint32_t timeout_ms)
+// Wartet unbegrenzt, bis reed_contact_is_closed()==true.
+static void wait_until_reed_closed(void)
 {
-    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
     while (!reed_contact_is_closed()) {
-        if (xTaskGetTickCount() >= deadline) {
-            return false;
-        }
         vTaskDelay(pdMS_TO_TICKS(LOCK_HOLD_POLL_INTERVAL_MS));
     }
-    return true;
 }
 
 // Wartet delay_ms, bricht aber sofort mit false ab, sobald der Reedkontakt
@@ -68,13 +60,9 @@ static void lock_control_task(void *pvParameters)
         // ist (Reedkontakt "geschlossen") UND das ueber die Nachlaufzeit
         // stabil bleibt -- sonst kann das Schloss bei geoeffneter Tuer
         // mechanisch gar nicht einrasten (siehe Erklaerung in lock_control.h).
+        // Unbegrenztes Warten -- keine Sicherheits-Obergrenze mehr.
         while (1) {
-            if (!wait_reed_closed_with_timeout(s_max_hold_ms)) {
-                ESP_LOGE(TAG, "Reedkontakt meldet seit %" PRIu32 "ms durchgehend 'nicht geschlossen' -- "
-                              "gebe Relais trotzdem frei (Ueberhitzungsschutz), Tuer/Schloss/Reedkontakt pruefen!",
-                         s_max_hold_ms);
-                break;
-            }
+            wait_until_reed_closed();
             if (wait_settle_delay_or_reopen(s_settle_delay_ms)) {
                 break;  // stabil geschlossen ueber die volle Nachlaufzeit -- fertig
             }
@@ -86,10 +74,9 @@ static void lock_control_task(void *pvParameters)
     }
 }
 
-esp_err_t lock_control_init(uint32_t settle_delay_ms, uint32_t max_hold_ms)
+esp_err_t lock_control_init(uint32_t settle_delay_ms)
 {
     s_settle_delay_ms = settle_delay_ms;
-    s_max_hold_ms = max_hold_ms;
 
     s_grant_queue = xQueueCreate(4, sizeof(uint8_t));
     if (s_grant_queue == NULL) {
@@ -97,8 +84,7 @@ esp_err_t lock_control_init(uint32_t settle_delay_ms, uint32_t max_hold_ms)
     }
 
     xTaskCreate(lock_control_task, "lock_control", 3072, NULL, 5, NULL);
-    ESP_LOGI(TAG, "Lock-Control gestartet (Nachlaufzeit %" PRIu32 "ms, Max-Halte %" PRIu32 "ms)",
-             s_settle_delay_ms, s_max_hold_ms);
+    ESP_LOGI(TAG, "Lock-Control gestartet (Nachlaufzeit %" PRIu32 "ms)", s_settle_delay_ms);
     return ESP_OK;
 }
 
