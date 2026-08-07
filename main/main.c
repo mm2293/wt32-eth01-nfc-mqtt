@@ -180,8 +180,12 @@ static void pn532_init_task(void *pvParameters)
         ESP_LOGI(TAG, "PN532-Modus: Raw-Bridge -- kein Polling/APDU-Relay, "
                       "PN532-UART wird 1:1 als TCP-Server exponiert (Port %u)",
                  cfg.pn532_bridge_tcp_port);
-        // MQTT wird in diesem Modus gar nicht erst gestartet (siehe app_main()
-        // oben) -- kein Stop-Aufruf hier noetig.
+        // MQTT wird in diesem Modus nicht genutzt (kein Kartenpolling, siehe
+        // unten) -- der esp-mqtt-Task liefe sonst mit gleicher Prioritaet wie
+        // den Bridge-Tasks weiter und koennte deren zeitkritisches
+        // Byte-Pumping fuer mfocs Nested-Attack verzoegern (siehe
+        // mqtt_client_setup.h:mqtt_client_setup_stop()).
+        mqtt_client_setup_stop();
         esp_err_t err = pn532_bridge_start(cfg.pn532_bridge_tcp_port);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "pn532_bridge_start fehlgeschlagen (Fehler %d)", err);
@@ -237,25 +241,13 @@ void app_main(void)
         ESP_LOGE(TAG, "Config-WebGUI konnte nicht gestartet werden (Fehler %d)", web_err);
     }
 
-    // Im Raw-Bridge-Modus wird MQTT nicht gebraucht (kein Kartenpolling, kein
-    // APDU-Relay -- siehe pn532_init_task()) -- der Client bleibt hier
-    // deshalb komplett ungestartet, statt ihn zu starten und gleich danach
-    // wieder zu stoppen: esp_mqtt_client_start() stoesst den Verbindungsaufbau
-    // asynchron im eigenen Task an, ein mqtt_client_setup_stop()-Aufruf kurz
-    // danach (frueherer Versuch, siehe pn532_init_task()-Historie) kam
-    // nachweislich zu frueh -- der Client verband sich auf echter Hardware
-    // trotzdem noch (Log zeigte "MQTT verbunden" NACH dem Stop-Aufruf) und
-    // lief mit gleicher FreeRTOS-Prioritaet (5) wie die Bridge-Tasks
-    // ungebremst weiter.
-    if (!cfg.pn532_raw_bridge_mode) {
-        esp_err_t mqtt_err = mqtt_client_setup_init(cfg.mqtt_broker_uri, cfg.mqtt_username, cfg.mqtt_password,
-                                                     cfg.mqtt_client_id,
-                                                     cfg.topic_raw, cfg.topic_apdu_cmd, cfg.topic_apdu_resp,
-                                                     cfg.topic_result, cfg.topic_homekey_group_id,
-                                                     cfg.relay_pulse_via_mqtt, cfg.topic_relay_pulse_ms);
-        if (mqtt_err != ESP_OK) {
-            ESP_LOGE(TAG, "MQTT-Client konnte nicht gestartet werden (Fehler %d)", mqtt_err);
-        }
+    esp_err_t mqtt_err = mqtt_client_setup_init(cfg.mqtt_broker_uri, cfg.mqtt_username, cfg.mqtt_password,
+                                                 cfg.mqtt_client_id,
+                                                 cfg.topic_raw, cfg.topic_apdu_cmd, cfg.topic_apdu_resp,
+                                                 cfg.topic_result, cfg.topic_homekey_group_id,
+                                                 cfg.relay_pulse_via_mqtt, cfg.topic_relay_pulse_ms);
+    if (mqtt_err != ESP_OK) {
+        ESP_LOGE(TAG, "MQTT-Client konnte nicht gestartet werden (Fehler %d)", mqtt_err);
     }
 
     xTaskCreate(pn532_init_task, "pn532_init", 4096, NULL, 5, NULL);
