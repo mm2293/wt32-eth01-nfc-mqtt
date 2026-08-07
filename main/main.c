@@ -180,6 +180,12 @@ static void pn532_init_task(void *pvParameters)
     app_config_t cfg;
     app_config_load(&cfg);
 
+    if (!cfg.pn532_enabled) {
+        ESP_LOGI(TAG, "PN532 deaktiviert (siehe WebGUI) -- kein UART/SAM/Polling/Bridge-Start");
+        vTaskDelete(NULL);
+        return;
+    }
+
     // 1. UART-Treiber initialisieren -- in BEIDEN Modi noetig (Managed und
     // Raw-Bridge greifen auf dieselbe UART zu, siehe pn532_bridge.c).
     pn532_uart_init((gpio_num_t)cfg.gpio_pn532_tx, (gpio_num_t)cfg.gpio_pn532_rx);
@@ -241,7 +247,14 @@ void app_main(void)
     app_config_load(&cfg);
 
     ESP_ERROR_CHECK(ethernet_setup_init(&cfg));
-    ESP_ERROR_CHECK(relay_control_init(cfg.relay_pulse_ms, (gpio_num_t)cfg.gpio_relay));
+    // relay_enabled=false: relay_control_init() bewusst uebersprungen (siehe
+    // app_config.h) -- relay_control_set() faengt den unkonfigurierten
+    // Zustand danach selbst per Log-Warnung ab, kein GPIO-Zugriff.
+    if (cfg.relay_enabled) {
+        ESP_ERROR_CHECK(relay_control_init(cfg.relay_pulse_ms, (gpio_num_t)cfg.gpio_relay));
+    } else {
+        ESP_LOGI(TAG, "Relais deaktiviert (siehe WebGUI)");
+    }
 
     ESP_LOGI(TAG, "Warte auf Ethernet-IP...");
     while (!ethernet_setup_has_ip()) {
@@ -265,31 +278,50 @@ void app_main(void)
     // mqtt_client_setup_publish_relay_state()). Das Relais ist zu diesem
     // Zeitpunkt garantiert noch aus (ein granted-Event kann erst nach
     // diesem MQTT-Connect eintreffen), daher hier einfach erneut "aus" setzen.
-    relay_control_set(false);
+    // Nur falls ueberhaupt konfiguriert -- sonst nur eine erwartbare
+    // Log-Warnung ohne Wirkung.
+    if (cfg.relay_enabled) {
+        relay_control_set(false);
+    }
 
     // Nach MQTT-Init (Publish braucht einen initialisierten Client, siehe
     // mqtt_client_setup_publish_reed_state()), unabhaengig vom PN532-Modus --
     // der Reedkontakt hat mit dem PN532/Karten-Handling nichts zu tun.
-    esp_err_t reed_err = reed_contact_init((gpio_num_t)cfg.gpio_reed);
-    if (reed_err != ESP_OK) {
-        ESP_LOGE(TAG, "Reedkontakt-Init fehlgeschlagen (Fehler %d)", reed_err);
+    // reed_enabled=false: uebersprungen, lock_control_init() bekommt das
+    // unten per reed_enabled mit und laesst die reed-abhaengige Logik dann
+    // komplett aus.
+    if (cfg.reed_enabled) {
+        esp_err_t reed_err = reed_contact_init((gpio_num_t)cfg.gpio_reed);
+        if (reed_err != ESP_OK) {
+            ESP_LOGE(TAG, "Reedkontakt-Init fehlgeschlagen (Fehler %d)", reed_err);
+        }
+    } else {
+        ESP_LOGI(TAG, "Reedkontakt deaktiviert (siehe WebGUI)");
     }
 
     // Nach relay_control_init()/reed_contact_init() (lock_control.c baut
     // beim ersten granted-Event auf beiden auf), vor dem PN532-Start --
     // Zutrittsvorgaenge (nfc/result) koennen ab dem MQTT-Connect jederzeit
     // eintreffen.
-    esp_err_t lock_err = lock_control_init(cfg.lock_settle_delay_ms);
+    esp_err_t lock_err = lock_control_init(cfg.lock_settle_delay_ms, cfg.reed_enabled);
     if (lock_err != ESP_OK) {
         ESP_LOGE(TAG, "Lock-Control-Init fehlgeschlagen (Fehler %d)", lock_err);
     }
 
     // Nach lock_control_init() (switch_contact.c ruft bei Betaetigung
     // lock_control_notify_granted() auf) -- manueller Taster/Schalter fuer
-    // einen Zutrittsvorgang ohne NFC, siehe switch_contact.h.
-    esp_err_t switch_err = switch_contact_init((gpio_num_t)cfg.gpio_switch);
-    if (switch_err != ESP_OK) {
-        ESP_LOGE(TAG, "Schalterkontakt-Init fehlgeschlagen (Fehler %d)", switch_err);
+    // einen Zutrittsvorgang ohne NFC, siehe switch_contact.h. NUR falls in
+    // der WebGUI aktiviert (siehe app_config.h:switch_enabled) -- ein
+    // unbeschalteter Pin mit nur internem Pull-Up ist sonst anfaellig fuer
+    // Stoereinstreuung (z.B. Hand in Boardnaehe) und wuerde ungewollte
+    // Zutrittsvorgaenge ausloesen.
+    if (cfg.switch_enabled) {
+        esp_err_t switch_err = switch_contact_init((gpio_num_t)cfg.gpio_switch);
+        if (switch_err != ESP_OK) {
+            ESP_LOGE(TAG, "Schalterkontakt-Init fehlgeschlagen (Fehler %d)", switch_err);
+        }
+    } else {
+        ESP_LOGI(TAG, "Schalterkontakt deaktiviert (siehe WebGUI)");
     }
 
     xTaskCreate(pn532_init_task, "pn532_init", 4096, NULL, 5, NULL);

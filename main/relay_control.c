@@ -17,6 +17,7 @@
 static const char *TAG = "relay_control";
 
 static gpio_num_t s_relay_pin = GPIO_NUM_4;
+static bool s_initialized = false;
 
 // Ueber die WebGUI konfigurierbar (siehe relay_control_init()), Default war
 // vormals fest 1500ms -- kurzer Impuls zur Vermeidung von Ueberhitzung der Spule.
@@ -36,6 +37,7 @@ esp_err_t relay_control_init(uint32_t pulse_ms, gpio_num_t pin)
     };
     esp_err_t err = gpio_config(&io_conf);
     if (err == ESP_OK) {
+        s_initialized = true;
         gpio_set_level(s_relay_pin, 0);
         ESP_LOGI(TAG, "Relais-GPIO initialisiert (Pin %d, Puls %" PRIu32 "ms)", s_relay_pin, s_relay_pulse_ms);
     }
@@ -44,6 +46,16 @@ esp_err_t relay_control_init(uint32_t pulse_ms, gpio_num_t pin)
 
 void relay_control_set(bool energized)
 {
+    // relay_enabled=false (siehe app_config.h): relay_control_init() wurde
+    // nie aufgerufen, der Pin ist unkonfiguriert -- lock_control.c ruft
+    // trotzdem unveraendert weiter auf, deshalb hier defensiv abfangen statt
+    // einen nie initialisierten GPIO anzusteuern oder einen irrefuehrenden
+    // MQTT-Status zu publizieren.
+    if (!s_initialized) {
+        ESP_LOGW(TAG, "Relais nicht konfiguriert (relay_enabled=false?), ignoriere relay_control_set(%s)",
+                 energized ? "true" : "false");
+        return;
+    }
     gpio_set_level(s_relay_pin, energized ? 1 : 0);
     ESP_LOGI(TAG, "Relais %s", energized ? "aktiviert" : "deaktiviert");
     mqtt_client_setup_publish_relay_state(energized);

@@ -25,12 +25,18 @@ ueber die sich folgende, bislang fest kodierte Werte aendern lassen:
   "nicht geschlossen" meldet.
 - PN532-Modus (Managed/Raw-Bridge): im Raw-Bridge-Modus blendet die WebGUI
   die dann wirkungslosen Managed-only-Felder automatisch aus
-- GPIO-Zuordnung: welcher Pin fuer Relais, Reedkontakt, Schalter/Taster und
-  PN532 TX/RX genutzt wird, waehlbar aus einem festen Pin-Pool (IO39, IO36,
-  IO15, IO14, IO12, IO5, IO4, IO2) -- IO39/IO36 nur fuer Eingaenge, doppelt
-  vergebene Pins werden beim Speichern abgelehnt. Ein Schalter/Taster an
-  seinem Pin loest denselben Zutrittsvorgang wie ein NFC-Grant aus (siehe
-  PROTOCOL.md)
+- GPIO-Zuordnung: Relais, Reedkontakt, Schalter/Taster und PN532 TX/RX sind
+  jeweils einzeln per Checkbox aktivierbar -- die Pin-Auswahl (aus dem festen
+  Pool IO15, IO14, IO12, IO4, IO2) erscheint erst, wenn die Checkbox gesetzt
+  ist. Doppelt vergebene Pins werden beim Speichern abgelehnt. Relais/
+  Reedkontakt/PN532 sind standardmaessig AKTIVIERT (bisheriges Verhalten).
+  Ein Schalter/Taster an seinem Pin loest denselben Zutrittsvorgang wie ein
+  NFC-Grant aus (siehe PROTOCOL.md) -- deshalb ist er als einziger
+  standardmaessig DEAKTIVIERT: erst einschalten, wenn dort wirklich ein
+  Taster/Schalter angeschlossen ist, sonst kann ein unbeschalteter Pin durch
+  Stoereinstreuung faelschlich das Schloss oeffnen (auf echter Hardware
+  reproduziert). IO39/IO36 (keine internen Pull-Widerstaende) und IO5
+  (Boot-Strapping-Pin) sind aus genau diesem Grund nicht mehr im Pin-Pool.
 - Das Admin-Passwort der WebGUI selbst
 
 Der APDU-Relay-Timeout (wie lange die Karte zwischen Kommandos im Feld
