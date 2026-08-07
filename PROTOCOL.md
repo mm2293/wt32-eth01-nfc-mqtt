@@ -40,9 +40,9 @@ parallel zur Zutrittssteuerung.
 
 Seit dem QoS/Retain-Umbau ist fuer praktisch jedes Topic ueber die WebGUI
 einstellbar, mit welcher QoS-Stufe (0-2) die Firmware es abonniert
-(Addon -> ESP32) bzw. publiziert (ESP32 -> Addon), und -- fuer die drei
-ESP32 -> Addon-Topics `nfc/raw`, `nfc/apdu_resp`, `nfc/lock_reed_state` --
-ob dabei das Retain-Flag gesetzt wird. Bei den Addon -> ESP32-Topics
+(Addon -> ESP32) bzw. publiziert (ESP32 -> Addon), und -- fuer die vier
+ESP32 -> Addon-Topics `nfc/raw`, `nfc/apdu_resp`, `nfc/lock_reed_state`,
+`nfc/relay_state` -- ob dabei das Retain-Flag gesetzt wird. Bei den Addon -> ESP32-Topics
 bestimmt weiterhin der Publisher (das Addon) das Retain-Flag, nicht die
 Firmware -- dort ist nur die Subscribe-QoS konfigurierbar.
 
@@ -56,6 +56,35 @@ eine feste (nicht-leere) MQTT-Client-ID in der WebGUI, sonst vergibt
 esp-mqtt bei jedem Verbindungsaufbau eine neue zufaellige ID und der Broker
 kann die alte Session nie wiederfinden (die Firmware loggt in diesem Fall
 eine Warnung).
+
+## GPIO-Zuordnung und Schalterkontakt
+
+Die Pin-Zuordnung fuer Relais, Reedkontakt, Schalter/Taster und die
+PN532-UART (TX/RX) ist ueber die WebGUI aus `app_config.h:APP_CFG_GPIO_POOL`
+waehlbar (WT32-ETH01: IO39, IO36, IO15, IO14, IO12, IO5, IO4, IO2 -- die
+nicht fest fuer Ethernet/Flash/Boot/USB-Log reservierten, herausgefuehrten
+Pins). IO39/IO36 sind Input-only und daher fuer Relais/PN532-TX nicht
+waehlbar (siehe `app_config_gpio_supports_output()`). Jeder Pin darf nur
+einer Funktion zugewiesen sein -- `web_config.c:save_post_handler()` prueft
+alle fuenf Zuordnungen beim Speichern auf Duplikate und verwirft bei einem
+Konflikt die GESAMTE neue Zuordnung (die vorherige bleibt unveraendert
+bestehen). Eine Aenderung wird erst nach dem Neustart wirksam. Defaults:
+Relais IO4, Reedkontakt IO2, Schalter IO12, PN532 TX IO14, PN532 RX IO15
+(entspricht dem bisherigen, fest kodierten Verhalten).
+
+IO12 ist ein Boot-Strapping-Pin (Flash-Spannungsauswahl): die Firmware
+nutzt dort ausschliesslich den internen Pull-Up (kein externer noetig/
+empfohlen), damit die Strapping-Erkennung beim Booten unbeeinflusst bleibt.
+
+Der Schalter-/Tasterkontakt (siehe `switch_contact.c`) ist verdrahtungs-
+und entprellungstechnisch identisch zum Reedkontakt (Input mit internem
+Pull-Up, Kontakt gegen GND), loest bei einer erkannten Schliessflanke aber
+KEINEN eigenen MQTT-Status aus, sondern ruft direkt
+`lock_control_notify_granted()` auf -- der Zutrittsvorgang laeuft danach
+exakt wie bei einem per `nfc/result` gewaehrten NFC-Zutritt ab (Basis-Puls,
+danach reedkontakt-bewusstes Halten/Nachlaufen, siehe `lock_control.c`).
+Die Oeffnungsflanke (Loslassen) loest nichts aus, ein Dauerdruecken feuert
+also nur einmal.
 
 ## Topics (nur im Managed-Modus relevant)
 

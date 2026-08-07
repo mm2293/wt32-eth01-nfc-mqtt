@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include "driver/gpio.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -16,8 +17,10 @@
 
 /* pulse_ms: Basis-Pulsdauer in ms (ueber die WebGUI konfigurierbar statt
  * fest kodiert) -- die eigentliche Steuerung des Relais inkl.
- * reedkontakt-bewusstem Halten uebernimmt lock_control.c, siehe dort. */
-esp_err_t relay_control_init(uint32_t pulse_ms);
+ * reedkontakt-bewusstem Halten uebernimmt lock_control.c, siehe dort.
+ * pin: GPIO-Ausgang fuers Relais, ueber die WebGUI aus APP_CFG_GPIO_POOL
+ * waehlbar (siehe app_config.h:gpio_relay), Default IO4. */
+esp_err_t relay_control_init(uint32_t pulse_ms, gpio_num_t pin);
 
 /* Low-Level: Relais-GPIO direkt setzen (nicht blockierend). Von
  * lock_control.c genutzt, um das Relais ueber die reine Basis-Pulsdauer

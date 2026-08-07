@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/uart.h"
+#include "driver/gpio.h"
 
 typedef struct {
     uint8_t uid[10];
@@ -17,7 +18,10 @@ typedef struct {
     bool iso14443_4;        // SAK & 0x20 -- Karte unterstuetzt ISO-DEP/APDUs
 } pn532_card_t;
 
-esp_err_t pn532_uart_init(void);
+/* tx_pin/rx_pin: GPIO-Zuordnung fuer die PN532-UART, ueber die WebGUI aus
+ * APP_CFG_GPIO_POOL waehlbar (siehe app_config.h:gpio_pn532_tx/gpio_pn532_rx),
+ * Default TX=IO14/RX=IO15. */
+esp_err_t pn532_uart_init(gpio_num_t tx_pin, gpio_num_t rx_pin);
 esp_err_t pn532_sam_configuration(void);
 
 /* Liefert den UART-Port, auf dem der PN532 haengt (siehe pn532_uart_init()).

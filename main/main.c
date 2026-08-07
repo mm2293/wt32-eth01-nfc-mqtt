@@ -18,8 +18,11 @@
  * In BEIDEN Modi unveraendert: Relaissteuerung per MQTT (nfc/result /
  * relay_pulse_ms, siehe mqtt_client_setup.c/relay_control.c), das
  * reedkontakt-bewusste Halten/Nachlaufen des Relais (siehe lock_control.c),
- * der Reedkontakt selbst (siehe reed_contact.c) und die Mini-WebGUI
- * (web_config.c).
+ * der Reedkontakt selbst (siehe reed_contact.c), der manuelle Taster-/
+ * Schalterkontakt (siehe switch_contact.c, loest denselben Ablauf wie ein
+ * NFC-Zutritt aus) und die Mini-WebGUI (web_config.c). Die GPIO-Zuordnung
+ * fuer Relais/Reedkontakt/Schalter/PN532-TX-RX ist ueber die WebGUI aus
+ * app_config.h:APP_CFG_GPIO_POOL waehlbar.
  */
 
 #include <stdio.h>
@@ -41,6 +44,7 @@
 #include "web_config.h"
 #include "reed_contact.h"
 #include "lock_control.h"
+#include "switch_contact.h"
 
 static const char *TAG = "main";
 
@@ -170,15 +174,15 @@ static void pn532_init_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "Starte PN532-Initialisierung...");
 
-    // 1. UART-Treiber initialisieren -- in BEIDEN Modi noetig (Managed und
-    // Raw-Bridge greifen auf dieselbe UART zu, siehe pn532_bridge.c).
-    pn532_uart_init();
-
     // Eigenstaendig geladen (statt cfg aus app_main() durchzureichen): cfg
     // in app_main() liegt auf dessen Task-Stack, der nach Rueckkehr von
     // app_main() freigegeben wird -- ein Pointer darauf waere hier ungueltig.
     app_config_t cfg;
     app_config_load(&cfg);
+
+    // 1. UART-Treiber initialisieren -- in BEIDEN Modi noetig (Managed und
+    // Raw-Bridge greifen auf dieselbe UART zu, siehe pn532_bridge.c).
+    pn532_uart_init((gpio_num_t)cfg.gpio_pn532_tx, (gpio_num_t)cfg.gpio_pn532_rx);
 
     if (cfg.pn532_raw_bridge_mode) {
         ESP_LOGI(TAG, "PN532-Modus: Raw-Bridge -- kein Polling/APDU-Relay, "
@@ -237,7 +241,7 @@ void app_main(void)
     app_config_load(&cfg);
 
     ESP_ERROR_CHECK(ethernet_setup_init(&cfg));
-    ESP_ERROR_CHECK(relay_control_init(cfg.relay_pulse_ms));
+    ESP_ERROR_CHECK(relay_control_init(cfg.relay_pulse_ms, (gpio_num_t)cfg.gpio_relay));
 
     ESP_LOGI(TAG, "Warte auf Ethernet-IP...");
     while (!ethernet_setup_has_ip()) {
@@ -266,7 +270,7 @@ void app_main(void)
     // Nach MQTT-Init (Publish braucht einen initialisierten Client, siehe
     // mqtt_client_setup_publish_reed_state()), unabhaengig vom PN532-Modus --
     // der Reedkontakt hat mit dem PN532/Karten-Handling nichts zu tun.
-    esp_err_t reed_err = reed_contact_init();
+    esp_err_t reed_err = reed_contact_init((gpio_num_t)cfg.gpio_reed);
     if (reed_err != ESP_OK) {
         ESP_LOGE(TAG, "Reedkontakt-Init fehlgeschlagen (Fehler %d)", reed_err);
     }
@@ -278,6 +282,14 @@ void app_main(void)
     esp_err_t lock_err = lock_control_init(cfg.lock_settle_delay_ms);
     if (lock_err != ESP_OK) {
         ESP_LOGE(TAG, "Lock-Control-Init fehlgeschlagen (Fehler %d)", lock_err);
+    }
+
+    // Nach lock_control_init() (switch_contact.c ruft bei Betaetigung
+    // lock_control_notify_granted() auf) -- manueller Taster/Schalter fuer
+    // einen Zutrittsvorgang ohne NFC, siehe switch_contact.h.
+    esp_err_t switch_err = switch_contact_init((gpio_num_t)cfg.gpio_switch);
+    if (switch_err != ESP_OK) {
+        ESP_LOGE(TAG, "Schalterkontakt-Init fehlgeschlagen (Fehler %d)", switch_err);
     }
 
     xTaskCreate(pn532_init_task, "pn532_init", 4096, NULL, 5, NULL);

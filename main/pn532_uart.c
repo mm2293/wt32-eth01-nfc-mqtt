@@ -1,9 +1,8 @@
 /*
  * PN532-Kommunikation über UART (HSU Mode)
  *
- * Pin-Belegung (WT32-ETH01):
- *   - TX: IO14 (ESP32) -> RX (PN532)
- *   - RX: IO15 (ESP32) -> TX (PN532) [mit internem Pull-Up]
+ * Pin-Belegung: ueber die WebGUI aus app_config.h:APP_CFG_GPIO_POOL
+ * waehlbar (siehe pn532_uart_init()), Default TX=IO14/RX=IO15.
  *
  * Neben den Basisbefehlen (SAMConfiguration, InListPassiveTarget) enthaelt
  * dieses Modul jetzt auch:
@@ -28,8 +27,6 @@
 static const char *TAG = "pn532_uart";
 
 #define PN532_UART_PORT      UART_NUM_1
-#define PN532_UART_TX_PIN    14
-#define PN532_UART_RX_PIN    15
 #define PN532_UART_BAUDRATE  115200
 #define PN532_UART_BUF_SIZE  512
 
@@ -149,7 +146,7 @@ void pn532_set_homekey_group_identifier(const uint8_t identifier[8])
     memcpy(s_homekey_group_identifier, identifier, sizeof(s_homekey_group_identifier));
 }
 
-esp_err_t pn532_uart_init(void)
+esp_err_t pn532_uart_init(gpio_num_t tx_pin, gpio_num_t rx_pin)
 {
     uart_config_t uart_config = {
         .baud_rate = PN532_UART_BAUDRATE,
@@ -162,12 +159,12 @@ esp_err_t pn532_uart_init(void)
 
     ESP_ERROR_CHECK(uart_driver_install(PN532_UART_PORT, PN532_UART_BUF_SIZE * 2, 0, 0, NULL, 0));
     ESP_ERROR_CHECK(uart_param_config(PN532_UART_PORT, &uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(PN532_UART_PORT, PN532_UART_TX_PIN, PN532_UART_RX_PIN,
+    ESP_ERROR_CHECK(uart_set_pin(PN532_UART_PORT, tx_pin, rx_pin,
                                   UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
-    gpio_set_pull_mode(PN532_UART_RX_PIN, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(rx_pin, GPIO_PULLUP_ONLY);
 
-    ESP_LOGI(TAG, "PN532 UART (TX=%d, RX=%d) initialisiert", PN532_UART_TX_PIN, PN532_UART_RX_PIN);
+    ESP_LOGI(TAG, "PN532 UART (TX=%d, RX=%d) initialisiert", tx_pin, rx_pin);
     return ESP_OK;
 }
 
