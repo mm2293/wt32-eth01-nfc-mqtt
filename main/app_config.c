@@ -24,7 +24,6 @@ static const char *NVS_NAMESPACE = "cfg";
 #define DEFAULT_LOCK_SETTLE_DELAY_MS      5000
 #define DEFAULT_TOPIC_LOCK_SETTLE_DELAY_MS "nfc/lock_settle_delay_ms"
 #define DEFAULT_QOS_LOCK_SETTLE_MS        1
-#define DEFAULT_LOCK_MAX_HOLD_MS          300000  // 5min
 #define DEFAULT_HOSTNAME         "wt32-nfc-gateway"
 #define DEFAULT_ADMIN_PASSWORD   "admin"
 #define DEFAULT_PN532_RAW_BRIDGE_MODE  false
@@ -107,7 +106,6 @@ esp_err_t app_config_load(app_config_t *cfg)
         cfg->lock_settle_delay_via_mqtt = false;
         strncpy(cfg->topic_lock_settle_delay_ms, DEFAULT_TOPIC_LOCK_SETTLE_DELAY_MS, sizeof(cfg->topic_lock_settle_delay_ms) - 1);
         cfg->qos_lock_settle_ms = DEFAULT_QOS_LOCK_SETTLE_MS;
-        cfg->lock_max_hold_ms = DEFAULT_LOCK_MAX_HOLD_MS;
         strncpy(cfg->admin_password, DEFAULT_ADMIN_PASSWORD, sizeof(cfg->admin_password) - 1);
         cfg->pn532_raw_bridge_mode = DEFAULT_PN532_RAW_BRIDGE_MODE;
         cfg->pn532_bridge_tcp_port = DEFAULT_PN532_BRIDGE_TCP_PORT;
@@ -181,10 +179,6 @@ esp_err_t app_config_load(app_config_t *cfg)
     get_str(h, "t_lock_settle", cfg->topic_lock_settle_delay_ms, sizeof(cfg->topic_lock_settle_delay_ms), DEFAULT_TOPIC_LOCK_SETTLE_DELAY_MS);
     cfg->qos_lock_settle_ms = get_qos(h, "qos_settle", DEFAULT_QOS_LOCK_SETTLE_MS);
 
-    uint32_t max_hold = DEFAULT_LOCK_MAX_HOLD_MS;
-    nvs_get_u32(h, "lock_maxhold", &max_hold);
-    cfg->lock_max_hold_ms = max_hold;
-
     get_str(h, "admin_pass", cfg->admin_password, sizeof(cfg->admin_password), DEFAULT_ADMIN_PASSWORD);
 
     uint8_t raw_bridge_u8 = DEFAULT_PN532_RAW_BRIDGE_MODE ? 1 : 0;
@@ -251,7 +245,6 @@ esp_err_t app_config_save(const app_config_t *cfg)
     nvs_set_u8(h, "lock_settle_mq", cfg->lock_settle_delay_via_mqtt ? 1 : 0);
     nvs_set_str(h, "t_lock_settle", cfg->topic_lock_settle_delay_ms);
     nvs_set_u8(h, "qos_settle", cfg->qos_lock_settle_ms);
-    nvs_set_u32(h, "lock_maxhold", cfg->lock_max_hold_ms);
 
     nvs_set_str(h, "admin_pass", cfg->admin_password);
 
