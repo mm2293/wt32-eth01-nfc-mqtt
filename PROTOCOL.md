@@ -86,6 +86,18 @@ danach reedkontakt-bewusstes Halten/Nachlaufen, siehe `lock_control.c`).
 Die Oeffnungsflanke (Loslassen) loest nichts aus, ein Dauerdruecken feuert
 also nur einmal.
 
+**`switch_enabled`** (`app_config.h`, Default `false`, WebGUI-Checkbox
+"Schalterkontakt aktivieren"): `switch_contact_init()` wird nur aufgerufen,
+wenn dieses Flag gesetzt ist (siehe `main.c:app_main()`). Grund: ein
+unbeschalteter Eingang haengt nur am hochohmigen internen Pull-Up und ist
+damit anfaellig fuer elektrostatische/kapazitive Stoereinstreuung (z.B.
+eine Hand in Boardnaehe) -- auf echter Hardware reproduziert, dass das
+faelschlich `lock_control_notify_granted()` ausloest und damit das Schloss
+ungewollt oeffnet. Der Reedkontakt hat dasselbe Grundproblem (identische
+Entprellung/Pull-Up), aber keine analoge Sicherung, weil er selbst nie
+etwas ausloest (siehe oben) -- Flattern dort ist bestenfalls Lograuschen
+(`reed_contact: Statuswechsel erkannt`), nicht sicherheitsrelevant.
+
 ## Topics (nur im Managed-Modus relevant)
 
 ### `nfc/raw` (ESP32 -> Addon)

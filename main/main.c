@@ -286,10 +286,18 @@ void app_main(void)
 
     // Nach lock_control_init() (switch_contact.c ruft bei Betaetigung
     // lock_control_notify_granted() auf) -- manueller Taster/Schalter fuer
-    // einen Zutrittsvorgang ohne NFC, siehe switch_contact.h.
-    esp_err_t switch_err = switch_contact_init((gpio_num_t)cfg.gpio_switch);
-    if (switch_err != ESP_OK) {
-        ESP_LOGE(TAG, "Schalterkontakt-Init fehlgeschlagen (Fehler %d)", switch_err);
+    // einen Zutrittsvorgang ohne NFC, siehe switch_contact.h. NUR falls in
+    // der WebGUI aktiviert (siehe app_config.h:switch_enabled) -- ein
+    // unbeschalteter Pin mit nur internem Pull-Up ist sonst anfaellig fuer
+    // Stoereinstreuung (z.B. Hand in Boardnaehe) und wuerde ungewollte
+    // Zutrittsvorgaenge ausloesen.
+    if (cfg.switch_enabled) {
+        esp_err_t switch_err = switch_contact_init((gpio_num_t)cfg.gpio_switch);
+        if (switch_err != ESP_OK) {
+            ESP_LOGE(TAG, "Schalterkontakt-Init fehlgeschlagen (Fehler %d)", switch_err);
+        }
+    } else {
+        ESP_LOGI(TAG, "Schalterkontakt deaktiviert (siehe WebGUI)");
     }
 
     xTaskCreate(pn532_init_task, "pn532_init", 4096, NULL, 5, NULL);

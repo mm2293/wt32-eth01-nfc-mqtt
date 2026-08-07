@@ -142,6 +142,16 @@ typedef struct {
     uint8_t  gpio_switch;     // Eingang (Taster/manueller Oeffner), Default IO12
     uint8_t  gpio_pn532_tx;   // Ausgang (ESP32 -> PN532 RX), Default IO14
     uint8_t  gpio_pn532_rx;   // Eingang (PN532 TX -> ESP32), Default IO15
+
+    // Schalterkontakt (siehe switch_contact.c) NUR aktivieren, wenn dort
+    // tatsaechlich ein Taster/Schalter angeschlossen ist -- Default false
+    // (deaktiviert): ein unbeschalteter, nur ueber den internen Pull-Up
+    // gehaltener Eingang ist hochohmig und damit anfaellig fuer
+    // elektrostatische/kapazitive Stoereinstreuung (z.B. eine Hand in der
+    // Naehe des Boards), was sonst einen falschen Zutrittsvorgang ausloesen
+    // wuerde. Bei false wird switch_contact_init() gar nicht erst
+    // aufgerufen (siehe main.c), der Pin bleibt unkonfiguriert.
+    bool     switch_enabled;
 } app_config_t;
 
 /* Laedt die Konfiguration aus NVS. Fehlende/noch nie gespeicherte Werte

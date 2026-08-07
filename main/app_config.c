@@ -55,6 +55,7 @@ static const char *NVS_NAMESPACE = "cfg";
 #define DEFAULT_GPIO_SWITCH     12
 #define DEFAULT_GPIO_PN532_TX   14
 #define DEFAULT_GPIO_PN532_RX   15
+#define DEFAULT_SWITCH_ENABLED  false
 
 const uint8_t APP_CFG_GPIO_POOL[APP_CFG_GPIO_POOL_LEN] = {39, 36, 15, 14, 12, 5, 4, 2};
 
@@ -166,6 +167,7 @@ esp_err_t app_config_load(app_config_t *cfg)
         cfg->gpio_switch = DEFAULT_GPIO_SWITCH;
         cfg->gpio_pn532_tx = DEFAULT_GPIO_PN532_TX;
         cfg->gpio_pn532_rx = DEFAULT_GPIO_PN532_RX;
+        cfg->switch_enabled = DEFAULT_SWITCH_ENABLED;
         return ESP_OK;
     }
 
@@ -259,6 +261,10 @@ esp_err_t app_config_load(app_config_t *cfg)
     cfg->gpio_pn532_tx = get_gpio(h, "gpio_pn532_tx", DEFAULT_GPIO_PN532_TX, true);
     cfg->gpio_pn532_rx = get_gpio(h, "gpio_pn532_rx", DEFAULT_GPIO_PN532_RX, false);
 
+    uint8_t switch_enabled_u8 = DEFAULT_SWITCH_ENABLED ? 1 : 0;
+    nvs_get_u8(h, "switch_en", &switch_enabled_u8);
+    cfg->switch_enabled = switch_enabled_u8 != 0;
+
     nvs_close(h);
     return ESP_OK;
 }
@@ -329,6 +335,8 @@ esp_err_t app_config_save(const app_config_t *cfg)
     nvs_set_u8(h, "gpio_switch", cfg->gpio_switch);
     nvs_set_u8(h, "gpio_pn532_tx", cfg->gpio_pn532_tx);
     nvs_set_u8(h, "gpio_pn532_rx", cfg->gpio_pn532_rx);
+
+    nvs_set_u8(h, "switch_en", cfg->switch_enabled ? 1 : 0);
 
     err = nvs_commit(h);
     nvs_close(h);

@@ -397,8 +397,14 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "<div class=\"row\"><div><label>Schalter/Taster (Eingang, loest wie ein NFC-Zutritt aus)%s</label></div>"
         "<div><label>PN532 TX (Ausgang, -&gt; PN532 RX)%s</label></div></div>"
         "<label>PN532 RX (Eingang, PN532 TX -&gt;)%s</label>"
+        "<label><input type=\"checkbox\" name=\"switch_en\" %s> Schalterkontakt aktivieren</label>"
+        "<p style=\"font-size:.85em;color:#555\">NUR aktivieren, wenn am oben gewaehlten Pin tatsaechlich ein "
+        "Taster/Schalter angeschlossen ist. Ein unbeschalteter Pin haengt nur am hochohmigen internen Pull-Up "
+        "und ist anfaellig fuer elektrostatische/kapazitive Stoereinstreuung (z.B. eine Hand in Boardnaehe) -- "
+        "das wuerde sonst faelschlich einen Zutrittsvorgang ausloesen. Standard: deaktiviert.</p>"
         "</fieldset>",
-        sel_gpio_relay, sel_gpio_reed, sel_gpio_switch, sel_gpio_pn532_tx, sel_gpio_pn532_rx);
+        sel_gpio_relay, sel_gpio_reed, sel_gpio_switch, sel_gpio_pn532_tx, sel_gpio_pn532_rx,
+        cfg.switch_enabled ? "checked" : "");
 
     char ret_raw_html[96], ret_resp_html[96], ret_reed_html[96], ret_relaystate_html[96];
     snprintf(ret_raw_html, sizeof(ret_raw_html), "<span class=\"inline\"><input type=\"checkbox\" name=\"ret_raw\" %s> Retain</span>", cfg.retain_raw ? "checked" : "");
@@ -696,6 +702,8 @@ static esp_err_t save_post_handler(httpd_req_t *req)
         cfg.gpio_pn532_tx = new_gpio_pn532_tx;
         cfg.gpio_pn532_rx = new_gpio_pn532_rx;
     }
+
+    cfg.switch_enabled = form_get_bool(body, "switch_en");
 
     free(body);
 
