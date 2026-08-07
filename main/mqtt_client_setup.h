@@ -65,14 +65,3 @@ bool mqtt_client_setup_wait_apdu_cmd(uint32_t session_id, mqtt_apdu_cmd_t *out_c
  * Schleifendurchlauf frisch abgefragt, eine Aenderung wirkt sich also sofort
  * auf die naechste Wartezeit aus, kein Neustart noetig. */
 uint32_t mqtt_client_setup_get_apdu_relay_timeout_ms(void);
-
-/* Stoppt den MQTT-Client vollstaendig (Verbindung trennen, internen esp-mqtt-
- * Task beenden) -- fuer den Raw-Bridge-Modus (main.c:pn532_init_task()), in
- * dem MQTT ohnehin ungenutzt bleibt: der esp-mqtt-Task laeuft sonst mit
- * gleicher FreeRTOS-Prioritaet (5, esp-mqtt-Default) wie
- * pn532_bridge.c weiter (Keepalive-Pings, Reconnect-Versuche) und kann die
- * dortigen Bridge-Tasks bei Gleichstand jederzeit fuer eine Zeitscheibe
- * verdraengen -- irrelevant im Normalbetrieb, aber genau die Art Jitter, die
- * zeitkritische Nested-Attack-Tools (mfoc) durcheinanderbringen kann. Ohne
- * Effekt, falls der Client nicht (mehr) laeuft. */
-void mqtt_client_setup_stop(void);

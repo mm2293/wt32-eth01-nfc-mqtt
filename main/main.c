@@ -180,12 +180,15 @@ static void pn532_init_task(void *pvParameters)
         ESP_LOGI(TAG, "PN532-Modus: Raw-Bridge -- kein Polling/APDU-Relay, "
                       "PN532-UART wird 1:1 als TCP-Server exponiert (Port %u)",
                  cfg.pn532_bridge_tcp_port);
-        // MQTT wird in diesem Modus nicht genutzt (kein Kartenpolling, siehe
-        // unten) -- der esp-mqtt-Task liefe sonst mit gleicher Prioritaet wie
-        // den Bridge-Tasks weiter und koennte deren zeitkritisches
-        // Byte-Pumping fuer mfocs Nested-Attack verzoegern (siehe
-        // mqtt_client_setup.h:mqtt_client_setup_stop()).
-        mqtt_client_setup_stop();
+        // MQTT bleibt in diesem Modus bewusst aktiv (siehe Datei-Kommentar
+        // oben) -- die Relaissteuerung (mqtt_client_setup.c:
+        // handle_result_message() -> relay_control_pulse()) haengt auch im
+        // Raw-Bridge-Modus daran: das Addon verarbeitet Karten zwar selbst
+        // (raw_auto_driver.py), meldet das Ergebnis aber weiterhin per MQTT
+        // an nfc/result zurueck (siehe relay_publisher.py), worueber die
+        // Firmware hier das physische Relais schaltet. Ein frueherer Versuch,
+        // MQTT hier zu stoppen/gar nicht erst zu starten, wurde deshalb
+        // wieder verworfen -- kein Stop-Aufruf mehr an dieser Stelle.
         esp_err_t err = pn532_bridge_start(cfg.pn532_bridge_tcp_port);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "pn532_bridge_start fehlgeschlagen (Fehler %d)", err);
