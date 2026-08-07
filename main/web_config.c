@@ -13,10 +13,15 @@
 #include "freertos/task.h"
 
 #include "app_config.h"
+#include "relay_control.h"
+#include "lock_control.h"
 
 static const char *TAG = "web_config";
 
-#define FORM_BUF_SIZE 2048
+// War 2048 -- reicht seit den QoS/Retain-Checkboxen und dem
+// Reedkontakt/Schloss-Feldset (deutlich mehr Formularfelder) nicht mehr
+// sicher fuer alle Felder auf Maximallaenge inkl. URL-Encoding.
+#define FORM_BUF_SIZE 4096
 #define OTA_RECV_BUF_SIZE 4096
 
 // -------------------- HTTP Basic Auth --------------------
@@ -140,6 +145,58 @@ static bool form_get_bool(const char *body, const char *key)
     return tmp[0] != '\0';
 }
 
+// Liest ein QoS-Level (0-2) aus einem <select>-Feld; fehlende/ungueltige
+// Werte fallen auf dflt zurueck (z.B. weil das Feld im Raw-Bridge-Modus per
+// JS ausgeblendet war und der Browser es trotzdem mitsendet, oder ein
+// manipulierter Request einen Wert ausserhalb 0-2 schickt).
+static uint8_t form_get_qos(const char *body, const char *key, uint8_t dflt)
+{
+    char tmp[4];
+    form_get(body, key, tmp, sizeof(tmp));
+    if (tmp[0] == '\0') return dflt;
+    long v = strtol(tmp, NULL, 10);
+    if (v < 0 || v > 2) return dflt;
+    return (uint8_t)v;
+}
+
+// Liest ein Sekunden-Textfeld (ggf. mit Nachkommastellen) und liefert den
+// Wert in Millisekunden, geklemmt auf [min_ms, max_ms]. Liefert -1 (statt
+// eines uint32_t), wenn das Feld leer/ungueltig war, damit der Aufrufer den
+// bisherigen Wert unangetastet lassen kann statt ihn auf 0 zu ueberschreiben.
+static long form_get_seconds_as_ms(const char *body, const char *key, uint32_t min_ms, uint32_t max_ms)
+{
+    char tmp[24];
+    form_get(body, key, tmp, sizeof(tmp));
+    if (tmp[0] == '\0') return -1;
+
+    char *endptr = NULL;
+    double sec = strtod(tmp, &endptr);
+    if (endptr == tmp || sec < 0) return -1;
+
+    double ms = sec * 1000.0;
+    if (ms < (double)min_ms) ms = (double)min_ms;
+    if (ms > (double)max_ms) ms = (double)max_ms;
+    return (long)(ms + 0.5);  // kaufmaennisch runden
+}
+
+// Baut ein <select> mit den drei moeglichen QoS-Stufen, aktueller Wert
+// vorausgewaehlt -- val wird dabei auf 0-2 geklemmt (defensiv, falls je ein
+// ungueltiger Wert aus NVS geladen wuerde).
+static void render_qos_select(char *out, size_t out_cap, const char *name, uint8_t val)
+{
+    if (val > 2) val = 2;
+    snprintf(out, out_cap,
+        "<select name=\"%s\">"
+        "<option value=\"0\"%s>QoS 0</option>"
+        "<option value=\"1\"%s>QoS 1</option>"
+        "<option value=\"2\"%s>QoS 2</option>"
+        "</select>",
+        name,
+        val == 0 ? " selected" : "",
+        val == 1 ? " selected" : "",
+        val == 2 ? " selected" : "");
+}
+
 // -------------------- GET / : Formular anzeigen --------------------
 
 static esp_err_t index_get_handler(httpd_req_t *req)
@@ -157,6 +214,7 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     char e_t_raw[APP_CFG_STR_LEN * 2], e_t_cmd[APP_CFG_STR_LEN * 2], e_t_resp[APP_CFG_STR_LEN * 2];
     char e_t_result[APP_CFG_STR_LEN * 2], e_t_hk[APP_CFG_STR_LEN * 2];
     char e_t_relay_ms[APP_CFG_STR_LEN * 2];
+    char e_t_reed[APP_CFG_STR_LEN * 2], e_t_lock_settle[APP_CFG_STR_LEN * 2];
     char e_admin_pass[APP_CFG_STR_LEN * 2];
 
     html_escape(cfg.net_ip, e_ip, sizeof(e_ip));
@@ -174,7 +232,32 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     html_escape(cfg.topic_result, e_t_result, sizeof(e_t_result));
     html_escape(cfg.topic_homekey_group_id, e_t_hk, sizeof(e_t_hk));
     html_escape(cfg.topic_relay_pulse_ms, e_t_relay_ms, sizeof(e_t_relay_ms));
+    html_escape(cfg.topic_reed_state, e_t_reed, sizeof(e_t_reed));
+    html_escape(cfg.topic_lock_settle_delay_ms, e_t_lock_settle, sizeof(e_t_lock_settle));
     html_escape(cfg.admin_password, e_admin_pass, sizeof(e_admin_pass));
+
+    // Sekunden-Anzeige (Textfelder erwarten Sekunden, nicht mehr ms -- die
+    // Config selbst bleibt intern in ms, siehe app_config.h). "%.3f" erlaubt
+    // bei Bedarf weiterhin ms-genaue Werte (z.B. 1.5s).
+    char sec_relay[24], sec_settle[24], sec_maxhold[24];
+    snprintf(sec_relay, sizeof(sec_relay), "%.3f", cfg.relay_pulse_ms / 1000.0);
+    snprintf(sec_settle, sizeof(sec_settle), "%.3f", cfg.lock_settle_delay_ms / 1000.0);
+    snprintf(sec_maxhold, sizeof(sec_maxhold), "%.3f", cfg.lock_max_hold_ms / 1000.0);
+
+    // QoS-Dropdowns je Topic -- ein <select> pro konfigurierbarem Topic,
+    // aktueller Wert vorausgewaehlt.
+    char sel_qos_raw[200], sel_qos_cmd[200], sel_qos_resp[200], sel_qos_result[200];
+    char sel_qos_hk[200], sel_qos_relayms[200], sel_qos_timeout[200];
+    char sel_qos_reed[200], sel_qos_settle[200];
+    render_qos_select(sel_qos_raw, sizeof(sel_qos_raw), "qos_raw", cfg.qos_raw);
+    render_qos_select(sel_qos_cmd, sizeof(sel_qos_cmd), "qos_cmd", cfg.qos_apdu_cmd);
+    render_qos_select(sel_qos_resp, sizeof(sel_qos_resp), "qos_resp", cfg.qos_apdu_resp);
+    render_qos_select(sel_qos_result, sizeof(sel_qos_result), "qos_result", cfg.qos_result);
+    render_qos_select(sel_qos_hk, sizeof(sel_qos_hk), "qos_hk", cfg.qos_homekey_group_id);
+    render_qos_select(sel_qos_relayms, sizeof(sel_qos_relayms), "qos_relayms", cfg.qos_relay_pulse_ms);
+    render_qos_select(sel_qos_timeout, sizeof(sel_qos_timeout), "qos_timeout", cfg.qos_apdu_relay_timeout_ms);
+    render_qos_select(sel_qos_reed, sizeof(sel_qos_reed), "qos_reed", cfg.qos_reed_state);
+    render_qos_select(sel_qos_settle, sizeof(sel_qos_settle), "qos_settle", cfg.qos_lock_settle_ms);
 
     // Diagnose-Info fuer das OTA-Fieldset: aktuell laufende Partition und ob
     // ueberhaupt eine zweite OTA-Partition (siehe partitions.csv) vorhanden
@@ -197,7 +280,9 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     // Ein einzelner malloc-Puffer fuer die zusammengesetzte Seite --
     // deutlich einfacher als httpd_resp_sendstr_chunk-Ketten, und der Server
     // laeuft ohnehin nur auf Menschen-Anfrage, nicht im NFC-Hotpath.
-    size_t html_cap = 11776;
+    // War 11776 -- reicht seit den QoS/Retain-Dropdowns je Topic und dem
+    // Reedkontakt/Schloss-Feldset nicht mehr.
+    size_t html_cap = 24576;
     char *html = malloc(html_cap);
     if (html == NULL) {
         httpd_resp_send_500(req);
@@ -214,8 +299,12 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "legend{font-weight:bold;padding:0 .4em}"
         "label{display:block;margin-top:.6em;font-size:.9em;color:#444}"
         "input[type=text],input[type=password],input[type=number]{width:100%%;box-sizing:border-box;padding:.4em;margin-top:.2em}"
+        "select{padding:.4em;margin-top:.2em}"
         "button{margin-top:1.2em;padding:.6em 1.4em;font-size:1em;cursor:pointer}"
         ".row{display:flex;gap:1em}.row > div{flex:1}"
+        ".qosrow{display:flex;align-items:center;gap:.6em;margin-top:.3em}"
+        ".qosrow label{margin-top:0;flex:0 0 auto}"
+        ".inline{display:inline-flex;align-items:center;gap:.3em;font-size:.85em;color:#444}"
         "</style></head><body>"
         "<h2>WT32-ETH01 NFC-Gateway</h2>"
         "<form method=\"POST\" action=\"/save\">"
@@ -232,6 +321,11 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "</fieldset>",
         cfg.net_use_dhcp ? "checked" : "", e_ip, e_mask, e_gw, e_dns, e_hostname);
 
+    char ret_raw_html[96], ret_resp_html[96], ret_reed_html[96];
+    snprintf(ret_raw_html, sizeof(ret_raw_html), "<span class=\"inline\"><input type=\"checkbox\" name=\"ret_raw\" %s> Retain</span>", cfg.retain_raw ? "checked" : "");
+    snprintf(ret_resp_html, sizeof(ret_resp_html), "<span class=\"inline\"><input type=\"checkbox\" name=\"ret_resp\" %s> Retain</span>", cfg.retain_apdu_resp ? "checked" : "");
+    snprintf(ret_reed_html, sizeof(ret_reed_html), "<span class=\"inline\"><input type=\"checkbox\" name=\"ret_reed\" %s> Retain</span>", cfg.retain_reed_state ? "checked" : "");
+
     size_t used = strlen(html);
     snprintf(html + used, html_cap - used,
         "<fieldset><legend>MQTT</legend>"
@@ -239,38 +333,97 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "<div class=\"row\"><div><label>Benutzername<input type=\"text\" name=\"mqtt_user\" value=\"%s\"></label></div>"
         "<div><label>Passwort<input type=\"text\" name=\"mqtt_pass\" value=\"%s\"></label></div></div>"
         "<label>Client-ID (leer = automatisch)<input type=\"text\" name=\"mqtt_cid\" value=\"%s\"></label>"
+        "<label><input type=\"checkbox\" name=\"mqtt_clean\" %s> Clean Session</label>"
+        "<p style=\"font-size:.85em;color:#555\">Verbindungsweite Einstellung (MQTT kennt das nur pro Client, "
+        "nicht pro Topic): markiert (Standard) = der Broker verwirft Subscriptions/wartende Nachrichten bei "
+        "Trennung. Unmarkiert = \"Persistent Session\", der Broker haelt beides ueber Trennungen hinweg vor -- "
+        "braucht dafuer eine feste Client-ID oben (sonst wirkungslos).</p>"
+        "<div id=\"managedOnlyFields\">"
         "<label>Topic: Karten-Rohdaten (ESP32 -&gt; Addon)<input type=\"text\" name=\"t_raw\" value=\"%s\"></label>"
+        "<div class=\"qosrow\"><label>QoS %s</label>%s</div>",
+        e_uri, e_user, e_pass, e_cid, cfg.mqtt_clean_session ? "checked" : "", e_t_raw, sel_qos_raw, ret_raw_html);
+
+    used = strlen(html);
+    snprintf(html + used, html_cap - used,
         "<label>Topic: APDU-Kommando (Addon -&gt; ESP32)<input type=\"text\" name=\"t_apdu_cmd\" value=\"%s\"></label>"
+        "<div class=\"qosrow\"><label>QoS %s</label></div>"
         "<label>Topic: APDU-Antwort (ESP32 -&gt; Addon)<input type=\"text\" name=\"t_apdu_resp\" value=\"%s\"></label>"
-        "<label>Topic: Ergebnis (Addon -&gt; ESP32)<input type=\"text\" name=\"t_result\" value=\"%s\"></label>"
+        "<div class=\"qosrow\"><label>QoS %s</label>%s</div>",
+        e_t_cmd, sel_qos_cmd, e_t_resp, sel_qos_resp, ret_resp_html);
+
+    used = strlen(html);
+    snprintf(html + used, html_cap - used,
         "<label>Topic: HomeKey Reader-Group-ID (Addon -&gt; ESP32)<input type=\"text\" name=\"t_homekey\" value=\"%s\"></label>"
+        "<div class=\"qosrow\"><label>QoS %s</label></div>"
         "<p style=\"font-size:.85em;color:#555\">Der APDU-Relay-Timeout (wie lange die Karte zwischen Kommandos "
         "im Feld gehalten wird) wird nicht mehr hier konfiguriert, sondern vollstaendig vom Addon per retained "
         "MQTT-Topic <code>nfc/apdu_relay_timeout_ms</code> gesteuert (Standard 3000ms).</p>"
+        "<div class=\"qosrow\"><label>QoS fuer <code>nfc/apdu_relay_timeout_ms</code> %s</label></div>"
+        "</div>"
+        "<label>Topic: Ergebnis (Addon -&gt; ESP32)<input type=\"text\" name=\"t_result\" value=\"%s\"></label>"
+        "<div class=\"qosrow\"><label>QoS %s</label></div>"
         "</fieldset>",
-        e_uri, e_user, e_pass, e_cid, e_t_raw, e_t_cmd, e_t_resp, e_t_result, e_t_hk);
+        e_t_hk, sel_qos_hk, sel_qos_timeout, e_t_result, sel_qos_result);
 
     used = strlen(html);
     snprintf(html + used, html_cap - used,
         "<fieldset><legend>Relais</legend>"
         "<label><input type=\"checkbox\" name=\"relay_mqtt\" %s onclick=\"toggleRelaySource(this)\"> Pulsdauer per MQTT setzen (statt fest)</label>"
         "<div id=\"relayFixedField\">"
-        "<label>Pulsdauer (ms)<input type=\"number\" name=\"relay_ms\" value=\"%" PRIu32 "\" min=\"50\" max=\"10000\"></label>"
+        "<label>Basis-Pulsdauer (Sekunden)<input type=\"number\" name=\"relay_sec\" value=\"%s\" min=\"0.05\" step=\"0.05\"></label>"
         "</div>"
         "<div id=\"relayMqttField\">"
         "<label>Topic: Relais-Pulsdauer (Addon -&gt; ESP32, retained, Payload = ms als Zahl)"
         "<input type=\"text\" name=\"t_relay_ms\" value=\"%s\"></label>"
+        "<div class=\"qosrow\"><label>QoS %s</label></div>"
         "</div>"
-        "</fieldset>"
+        "<p style=\"font-size:.85em;color:#555\">Kein festes Maximum mehr -- siehe Reedkontakt-Feldset unten: "
+        "das Relais wird bei einem Zutrittsvorgang ohnehin so lange gehalten, wie es das Schloss laut "
+        "Reedkontakt braucht, unabhaengig von dieser Basis-Pulsdauer.</p>"
+        "</fieldset>",
+        cfg.relay_pulse_via_mqtt ? "checked" : "", sec_relay, e_t_relay_ms, sel_qos_relayms);
 
+    used = strlen(html);
+    snprintf(html + used, html_cap - used,
+        "<fieldset><legend>Reedkontakt &amp; Schloss-Logik</legend>"
+        "<p style=\"font-size:.85em;color:#555\">Reedkontakt an IO2 (fest verdrahtet, Input mit internem "
+        "Pull-Up gegen GND) meldet, ob das Schloss in Schliessposition ist. Nach einem gewaehrten Zutritt "
+        "(<code>nfc/result</code> mit <code>granted:true</code>) haelt die Firmware das Relais so lange aktiv, "
+        "wie der Reedkontakt \"nicht geschlossen\" meldet (z.B. weil die Tuer noch offen steht), plus der "
+        "folgenden Nachlaufzeit nach dem Wiederschliessen. Siehe PROTOCOL.md fuer Details.</p>"
+        "<label>Topic: Reedkontakt-Status (ESP32 -&gt; Addon, retained)<input type=\"text\" name=\"t_reed\" value=\"%s\"></label>"
+        "<div class=\"qosrow\"><label>QoS %s</label>%s</div>"
+        "<label><input type=\"checkbox\" name=\"lock_settle_mqtt\" %s onclick=\"toggleLockSettleSource(this)\"> Nachlaufzeit per MQTT setzen (statt fest)</label>"
+        "<div id=\"lockSettleFixedField\">"
+        "<label>Nachlaufzeit nach dem Wiederschliessen (Sekunden)<input type=\"number\" name=\"lock_settle_sec\" value=\"%s\" min=\"0\" step=\"0.1\"></label>"
+        "</div>"
+        "<div id=\"lockSettleMqttField\">"
+        "<label>Topic: Schloss-Nachlaufzeit (Addon -&gt; ESP32, retained, Payload = ms als Zahl)"
+        "<input type=\"text\" name=\"t_lock_settle\" value=\"%s\"></label>"
+        "<div class=\"qosrow\"><label>QoS %s</label></div>"
+        "</div>"
+        "<label>Sicherheits-Obergrenze fuers Halten (Sekunden, NICHT per MQTT ueberschreibbar)"
+        "<input type=\"number\" name=\"lock_maxhold_sec\" value=\"%s\" min=\"5\" step=\"1\"></label>"
+        "<p style=\"font-size:.85em;color:#555\">Schutz vor Spulen-/Motor-Ueberhitzung: bleibt der Reedkontakt "
+        "laenger als diese Zeit am Stueck \"nicht geschlossen\" (z.B. Tuer wird laenger aufgehalten), gibt die "
+        "Firmware das Relais TROTZDEM frei und loggt einen Fehler, statt die Spule endlos unter Strom zu "
+        "halten. Bewusst nicht per MQTT aenderbar, damit ein fehlerhaftes/kompromittiertes Addon diesen Schutz "
+        "nicht aushebeln kann.</p>"
+        "</fieldset>",
+        e_t_reed, sel_qos_reed, ret_reed_html, cfg.lock_settle_delay_via_mqtt ? "checked" : "",
+        sec_settle, e_t_lock_settle, sel_qos_settle, sec_maxhold);
+
+    used = strlen(html);
+    snprintf(html + used, html_cap - used,
         "<fieldset><legend>PN532-Modus</legend>"
-        "<label><input type=\"checkbox\" name=\"pn532_raw\" %s> Raw-Bridge statt Managed</label>"
+        "<label><input type=\"checkbox\" name=\"pn532_raw\" %s onclick=\"toggleRawBridgeFields(this)\"> Raw-Bridge statt Managed</label>"
         "<p style=\"font-size:.85em;color:#555\">Managed (Standard, unmarkiert): die Firmware pollt selbst nach "
         "Karten und relayt HomeKey/DESFire-APDUs per MQTT -- Zutrittssteuerung/Lernmodus funktionieren normal. "
         "Raw-Bridge (markiert): kein Kartenpolling mehr, die PN532-UART wird stattdessen 1:1 als TCP-Server "
         "exponiert, fuer direkten Zugriff durch das Addon/externe Tools (mfoc, libnfc, ...). In diesem Modus "
-        "ist die automatische Zutrittssteuerung ueber diesen Reader inaktiv. Relaissteuerung per MQTT bleibt in "
-        "BEIDEN Modi unveraendert aktiv. Eine Aenderung wird erst nach dem Neustart wirksam.</p>"
+        "ist die automatische Zutrittssteuerung ueber diesen Reader inaktiv (die oben ausgeblendeten Felder "
+        "sind dann ohne Funktion). Relaissteuerung per MQTT inkl. Reedkontakt-Logik bleibt in BEIDEN Modi "
+        "unveraendert aktiv. Eine Aenderung wird erst nach dem Neustart wirksam.</p>"
         "<label>Bridge TCP-Port (nur im Raw-Bridge-Modus relevant)"
         "<input type=\"number\" name=\"pn532_port\" value=\"%u\" min=\"1\" max=\"65535\"></label>"
         "</fieldset>"
@@ -297,6 +450,15 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "document.getElementById('relayMqttField').style.display=cb.checked?'block':'none';"
         "}"
         "toggleRelaySource(document.querySelector('input[name=relay_mqtt]'));"
+        "function toggleLockSettleSource(cb){"
+        "document.getElementById('lockSettleFixedField').style.display=cb.checked?'none':'block';"
+        "document.getElementById('lockSettleMqttField').style.display=cb.checked?'block':'none';"
+        "}"
+        "toggleLockSettleSource(document.querySelector('input[name=lock_settle_mqtt]'));"
+        "function toggleRawBridgeFields(cb){"
+        "document.getElementById('managedOnlyFields').style.display=cb.checked?'none':'block';"
+        "}"
+        "toggleRawBridgeFields(document.querySelector('input[name=pn532_raw]'));"
         "async function uploadOta(){"
         "var f=document.getElementById('otaFile').files[0];"
         "var s=document.getElementById('otaStatus');"
@@ -311,7 +473,6 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "}"
         "</script>"
         "</body></html>",
-        cfg.relay_pulse_via_mqtt ? "checked" : "", cfg.relay_pulse_ms, e_t_relay_ms,
         cfg.pn532_raw_bridge_mode ? "checked" : "", (unsigned)cfg.pn532_bridge_tcp_port,
         e_admin_pass,
         ota_info);
@@ -367,11 +528,31 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     form_get(body, "mqtt_user", cfg.mqtt_username, sizeof(cfg.mqtt_username));
     form_get(body, "mqtt_pass", cfg.mqtt_password, sizeof(cfg.mqtt_password));
     form_get(body, "mqtt_cid", cfg.mqtt_client_id, sizeof(cfg.mqtt_client_id));
+    cfg.mqtt_clean_session = form_get_bool(body, "mqtt_clean");
     form_get(body, "t_raw", cfg.topic_raw, sizeof(cfg.topic_raw));
     form_get(body, "t_apdu_cmd", cfg.topic_apdu_cmd, sizeof(cfg.topic_apdu_cmd));
     form_get(body, "t_apdu_resp", cfg.topic_apdu_resp, sizeof(cfg.topic_apdu_resp));
     form_get(body, "t_result", cfg.topic_result, sizeof(cfg.topic_result));
     form_get(body, "t_homekey", cfg.topic_homekey_group_id, sizeof(cfg.topic_homekey_group_id));
+
+    cfg.qos_raw = form_get_qos(body, "qos_raw", cfg.qos_raw);
+    cfg.qos_apdu_cmd = form_get_qos(body, "qos_cmd", cfg.qos_apdu_cmd);
+    cfg.qos_apdu_resp = form_get_qos(body, "qos_resp", cfg.qos_apdu_resp);
+    cfg.qos_result = form_get_qos(body, "qos_result", cfg.qos_result);
+    cfg.qos_homekey_group_id = form_get_qos(body, "qos_hk", cfg.qos_homekey_group_id);
+    cfg.qos_relay_pulse_ms = form_get_qos(body, "qos_relayms", cfg.qos_relay_pulse_ms);
+    cfg.qos_apdu_relay_timeout_ms = form_get_qos(body, "qos_timeout", cfg.qos_apdu_relay_timeout_ms);
+    cfg.qos_reed_state = form_get_qos(body, "qos_reed", cfg.qos_reed_state);
+    cfg.qos_lock_settle_ms = form_get_qos(body, "qos_settle", cfg.qos_lock_settle_ms);
+
+    cfg.retain_raw = form_get_bool(body, "ret_raw");
+    cfg.retain_apdu_resp = form_get_bool(body, "ret_resp");
+    cfg.retain_reed_state = form_get_bool(body, "ret_reed");
+
+    form_get(body, "t_reed", cfg.topic_reed_state, sizeof(cfg.topic_reed_state));
+    if (cfg.topic_reed_state[0] == '\0') {
+        strncpy(cfg.topic_reed_state, "nfc/lock_reed_state", sizeof(cfg.topic_reed_state) - 1);
+    }
 
     cfg.relay_pulse_via_mqtt = form_get_bool(body, "relay_mqtt");
     form_get(body, "t_relay_ms", cfg.topic_relay_pulse_ms, sizeof(cfg.topic_relay_pulse_ms));
@@ -379,13 +560,25 @@ static esp_err_t save_post_handler(httpd_req_t *req)
         strncpy(cfg.topic_relay_pulse_ms, "nfc/relay_pulse_ms", sizeof(cfg.topic_relay_pulse_ms) - 1);
     }
 
-    char relay_ms_str[16];
-    form_get(body, "relay_ms", relay_ms_str, sizeof(relay_ms_str));
-    if (relay_ms_str[0] != '\0') {
-        long v = strtol(relay_ms_str, NULL, 10);
-        if (v >= 50 && v <= 10000) {
-            cfg.relay_pulse_ms = (uint32_t)v;
-        }
+    long relay_ms = form_get_seconds_as_ms(body, "relay_sec", RELAY_PULSE_MS_MIN, RELAY_PULSE_MS_MAX);
+    if (relay_ms >= 0) {
+        cfg.relay_pulse_ms = (uint32_t)relay_ms;
+    }
+
+    cfg.lock_settle_delay_via_mqtt = form_get_bool(body, "lock_settle_mqtt");
+    form_get(body, "t_lock_settle", cfg.topic_lock_settle_delay_ms, sizeof(cfg.topic_lock_settle_delay_ms));
+    if (cfg.topic_lock_settle_delay_ms[0] == '\0') {
+        strncpy(cfg.topic_lock_settle_delay_ms, "nfc/lock_settle_delay_ms", sizeof(cfg.topic_lock_settle_delay_ms) - 1);
+    }
+
+    long settle_ms = form_get_seconds_as_ms(body, "lock_settle_sec", LOCK_SETTLE_DELAY_MS_MIN, LOCK_SETTLE_DELAY_MS_MAX);
+    if (settle_ms >= 0) {
+        cfg.lock_settle_delay_ms = (uint32_t)settle_ms;
+    }
+
+    long maxhold_ms = form_get_seconds_as_ms(body, "lock_maxhold_sec", LOCK_MAX_HOLD_MS_MIN, LOCK_MAX_HOLD_MS_MAX);
+    if (maxhold_ms >= 0) {
+        cfg.lock_max_hold_ms = (uint32_t)maxhold_ms;
     }
 
     char admin_pass[APP_CFG_STR_LEN];

@@ -20,10 +20,30 @@ static const char *NVS_NAMESPACE = "cfg";
 #define DEFAULT_TOPIC_HOMEKEY_GROUP_ID   "nfc/homekey_group_id"
 #define DEFAULT_RELAY_PULSE_MS   1500
 #define DEFAULT_TOPIC_RELAY_PULSE_MS     "nfc/relay_pulse_ms"
+#define DEFAULT_TOPIC_REED_STATE         "nfc/lock_reed_state"
+#define DEFAULT_LOCK_SETTLE_DELAY_MS      5000
+#define DEFAULT_TOPIC_LOCK_SETTLE_DELAY_MS "nfc/lock_settle_delay_ms"
+#define DEFAULT_QOS_LOCK_SETTLE_MS        1
+#define DEFAULT_LOCK_MAX_HOLD_MS          300000  // 5min
 #define DEFAULT_HOSTNAME         "wt32-nfc-gateway"
 #define DEFAULT_ADMIN_PASSWORD   "admin"
 #define DEFAULT_PN532_RAW_BRIDGE_MODE  false
 #define DEFAULT_PN532_BRIDGE_TCP_PORT  4444
+#define DEFAULT_MQTT_CLEAN_SESSION  true
+
+// QoS-Defaults entsprechen dem bisherigen fest kodierten Verhalten (siehe
+// Kommentare in mqtt_client_setup.c zu den jeweiligen Subscribe-/Publish-Aufrufen).
+#define DEFAULT_QOS_RAW                   1
+#define DEFAULT_QOS_APDU_CMD              0
+#define DEFAULT_QOS_APDU_RESP             0
+#define DEFAULT_QOS_RESULT                1
+#define DEFAULT_QOS_HOMEKEY_GROUP_ID      1
+#define DEFAULT_QOS_RELAY_PULSE_MS        1
+#define DEFAULT_QOS_APDU_RELAY_TIMEOUT_MS 1
+#define DEFAULT_QOS_REED_STATE            1
+#define DEFAULT_RETAIN_RAW                false
+#define DEFAULT_RETAIN_APDU_RESP          false
+#define DEFAULT_RETAIN_REED_STATE         true
 
 static void get_str(nvs_handle_t h, const char *key, char *out, size_t out_cap, const char *dflt)
 {
@@ -32,6 +52,19 @@ static void get_str(nvs_handle_t h, const char *key, char *out, size_t out_cap, 
         strncpy(out, dflt, out_cap - 1);
         out[out_cap - 1] = '\0';
     }
+}
+
+// Liest ein QoS-Level (0-2); ungueltige/fehlende Werte fallen auf dflt
+// zurueck -- ein per WebGUI-Formular manipulierter Wert ausserhalb 0-2
+// koennte sonst als rohe Zahl an esp_mqtt_client_subscribe()/_publish()
+// durchgereicht werden.
+static uint8_t get_qos(nvs_handle_t h, const char *key, uint8_t dflt)
+{
+    uint8_t v = dflt;
+    if (nvs_get_u8(h, key, &v) != ESP_OK || v > 2) {
+        return dflt;
+    }
+    return v;
 }
 
 esp_err_t app_config_load(app_config_t *cfg)
@@ -54,9 +87,27 @@ esp_err_t app_config_load(app_config_t *cfg)
         strncpy(cfg->topic_apdu_resp, DEFAULT_TOPIC_APDU_RESP, sizeof(cfg->topic_apdu_resp) - 1);
         strncpy(cfg->topic_result, DEFAULT_TOPIC_RESULT, sizeof(cfg->topic_result) - 1);
         strncpy(cfg->topic_homekey_group_id, DEFAULT_TOPIC_HOMEKEY_GROUP_ID, sizeof(cfg->topic_homekey_group_id) - 1);
+        cfg->mqtt_clean_session = DEFAULT_MQTT_CLEAN_SESSION;
+        cfg->qos_raw = DEFAULT_QOS_RAW;
+        cfg->qos_apdu_cmd = DEFAULT_QOS_APDU_CMD;
+        cfg->qos_apdu_resp = DEFAULT_QOS_APDU_RESP;
+        cfg->qos_result = DEFAULT_QOS_RESULT;
+        cfg->qos_homekey_group_id = DEFAULT_QOS_HOMEKEY_GROUP_ID;
+        cfg->qos_relay_pulse_ms = DEFAULT_QOS_RELAY_PULSE_MS;
+        cfg->qos_apdu_relay_timeout_ms = DEFAULT_QOS_APDU_RELAY_TIMEOUT_MS;
+        cfg->qos_reed_state = DEFAULT_QOS_REED_STATE;
+        cfg->retain_raw = DEFAULT_RETAIN_RAW;
+        cfg->retain_apdu_resp = DEFAULT_RETAIN_APDU_RESP;
+        cfg->retain_reed_state = DEFAULT_RETAIN_REED_STATE;
         cfg->relay_pulse_ms = DEFAULT_RELAY_PULSE_MS;
         cfg->relay_pulse_via_mqtt = false;
         strncpy(cfg->topic_relay_pulse_ms, DEFAULT_TOPIC_RELAY_PULSE_MS, sizeof(cfg->topic_relay_pulse_ms) - 1);
+        strncpy(cfg->topic_reed_state, DEFAULT_TOPIC_REED_STATE, sizeof(cfg->topic_reed_state) - 1);
+        cfg->lock_settle_delay_ms = DEFAULT_LOCK_SETTLE_DELAY_MS;
+        cfg->lock_settle_delay_via_mqtt = false;
+        strncpy(cfg->topic_lock_settle_delay_ms, DEFAULT_TOPIC_LOCK_SETTLE_DELAY_MS, sizeof(cfg->topic_lock_settle_delay_ms) - 1);
+        cfg->qos_lock_settle_ms = DEFAULT_QOS_LOCK_SETTLE_MS;
+        cfg->lock_max_hold_ms = DEFAULT_LOCK_MAX_HOLD_MS;
         strncpy(cfg->admin_password, DEFAULT_ADMIN_PASSWORD, sizeof(cfg->admin_password) - 1);
         cfg->pn532_raw_bridge_mode = DEFAULT_PN532_RAW_BRIDGE_MODE;
         cfg->pn532_bridge_tcp_port = DEFAULT_PN532_BRIDGE_TCP_PORT;
@@ -84,6 +135,31 @@ esp_err_t app_config_load(app_config_t *cfg)
     get_str(h, "t_result", cfg->topic_result, sizeof(cfg->topic_result), DEFAULT_TOPIC_RESULT);
     get_str(h, "t_homekey", cfg->topic_homekey_group_id, sizeof(cfg->topic_homekey_group_id), DEFAULT_TOPIC_HOMEKEY_GROUP_ID);
 
+    uint8_t clean_session_u8 = DEFAULT_MQTT_CLEAN_SESSION ? 1 : 0;
+    nvs_get_u8(h, "mqtt_clean", &clean_session_u8);
+    cfg->mqtt_clean_session = clean_session_u8 != 0;
+
+    cfg->qos_raw = get_qos(h, "qos_raw", DEFAULT_QOS_RAW);
+    cfg->qos_apdu_cmd = get_qos(h, "qos_cmd", DEFAULT_QOS_APDU_CMD);
+    cfg->qos_apdu_resp = get_qos(h, "qos_resp", DEFAULT_QOS_APDU_RESP);
+    cfg->qos_result = get_qos(h, "qos_result", DEFAULT_QOS_RESULT);
+    cfg->qos_homekey_group_id = get_qos(h, "qos_hk", DEFAULT_QOS_HOMEKEY_GROUP_ID);
+    cfg->qos_relay_pulse_ms = get_qos(h, "qos_relayms", DEFAULT_QOS_RELAY_PULSE_MS);
+    cfg->qos_apdu_relay_timeout_ms = get_qos(h, "qos_timeout", DEFAULT_QOS_APDU_RELAY_TIMEOUT_MS);
+    cfg->qos_reed_state = get_qos(h, "qos_reed", DEFAULT_QOS_REED_STATE);
+
+    uint8_t retain_raw_u8 = DEFAULT_RETAIN_RAW ? 1 : 0;
+    nvs_get_u8(h, "ret_raw", &retain_raw_u8);
+    cfg->retain_raw = retain_raw_u8 != 0;
+
+    uint8_t retain_resp_u8 = DEFAULT_RETAIN_APDU_RESP ? 1 : 0;
+    nvs_get_u8(h, "ret_resp", &retain_resp_u8);
+    cfg->retain_apdu_resp = retain_resp_u8 != 0;
+
+    uint8_t retain_reed_u8 = DEFAULT_RETAIN_REED_STATE ? 1 : 0;
+    nvs_get_u8(h, "ret_reed", &retain_reed_u8);
+    cfg->retain_reed_state = retain_reed_u8 != 0;
+
     uint32_t pulse = DEFAULT_RELAY_PULSE_MS;
     nvs_get_u32(h, "relay_ms", &pulse);
     cfg->relay_pulse_ms = pulse;
@@ -92,6 +168,22 @@ esp_err_t app_config_load(app_config_t *cfg)
     nvs_get_u8(h, "relay_mqtt", &relay_mqtt_u8);
     cfg->relay_pulse_via_mqtt = relay_mqtt_u8 != 0;
     get_str(h, "t_relay_ms", cfg->topic_relay_pulse_ms, sizeof(cfg->topic_relay_pulse_ms), DEFAULT_TOPIC_RELAY_PULSE_MS);
+
+    get_str(h, "t_reed", cfg->topic_reed_state, sizeof(cfg->topic_reed_state), DEFAULT_TOPIC_REED_STATE);
+
+    uint32_t settle_delay = DEFAULT_LOCK_SETTLE_DELAY_MS;
+    nvs_get_u32(h, "lock_settle", &settle_delay);
+    cfg->lock_settle_delay_ms = settle_delay;
+
+    uint8_t settle_mqtt_u8 = 0;
+    nvs_get_u8(h, "lock_settle_mq", &settle_mqtt_u8);
+    cfg->lock_settle_delay_via_mqtt = settle_mqtt_u8 != 0;
+    get_str(h, "t_lock_settle", cfg->topic_lock_settle_delay_ms, sizeof(cfg->topic_lock_settle_delay_ms), DEFAULT_TOPIC_LOCK_SETTLE_DELAY_MS);
+    cfg->qos_lock_settle_ms = get_qos(h, "qos_settle", DEFAULT_QOS_LOCK_SETTLE_MS);
+
+    uint32_t max_hold = DEFAULT_LOCK_MAX_HOLD_MS;
+    nvs_get_u32(h, "lock_maxhold", &max_hold);
+    cfg->lock_max_hold_ms = max_hold;
 
     get_str(h, "admin_pass", cfg->admin_password, sizeof(cfg->admin_password), DEFAULT_ADMIN_PASSWORD);
 
@@ -134,9 +226,32 @@ esp_err_t app_config_save(const app_config_t *cfg)
     nvs_set_str(h, "t_result", cfg->topic_result);
     nvs_set_str(h, "t_homekey", cfg->topic_homekey_group_id);
 
+    nvs_set_u8(h, "mqtt_clean", cfg->mqtt_clean_session ? 1 : 0);
+
+    nvs_set_u8(h, "qos_raw", cfg->qos_raw);
+    nvs_set_u8(h, "qos_cmd", cfg->qos_apdu_cmd);
+    nvs_set_u8(h, "qos_resp", cfg->qos_apdu_resp);
+    nvs_set_u8(h, "qos_result", cfg->qos_result);
+    nvs_set_u8(h, "qos_hk", cfg->qos_homekey_group_id);
+    nvs_set_u8(h, "qos_relayms", cfg->qos_relay_pulse_ms);
+    nvs_set_u8(h, "qos_timeout", cfg->qos_apdu_relay_timeout_ms);
+    nvs_set_u8(h, "qos_reed", cfg->qos_reed_state);
+
+    nvs_set_u8(h, "ret_raw", cfg->retain_raw ? 1 : 0);
+    nvs_set_u8(h, "ret_resp", cfg->retain_apdu_resp ? 1 : 0);
+    nvs_set_u8(h, "ret_reed", cfg->retain_reed_state ? 1 : 0);
+
     nvs_set_u32(h, "relay_ms", cfg->relay_pulse_ms);
     nvs_set_u8(h, "relay_mqtt", cfg->relay_pulse_via_mqtt ? 1 : 0);
     nvs_set_str(h, "t_relay_ms", cfg->topic_relay_pulse_ms);
+
+    nvs_set_str(h, "t_reed", cfg->topic_reed_state);
+
+    nvs_set_u32(h, "lock_settle", cfg->lock_settle_delay_ms);
+    nvs_set_u8(h, "lock_settle_mq", cfg->lock_settle_delay_via_mqtt ? 1 : 0);
+    nvs_set_str(h, "t_lock_settle", cfg->topic_lock_settle_delay_ms);
+    nvs_set_u8(h, "qos_settle", cfg->qos_lock_settle_ms);
+    nvs_set_u32(h, "lock_maxhold", cfg->lock_max_hold_ms);
 
     nvs_set_str(h, "admin_pass", cfg->admin_password);
 

@@ -16,8 +16,10 @@
  *   direkten Zugriff durch das Addon/externe Tools (mfoc, libnfc, ...).
  *
  * In BEIDEN Modi unveraendert: Relaissteuerung per MQTT (nfc/result /
- * relay_pulse_ms, siehe mqtt_client_setup.c/relay_control.c) und die
- * Mini-WebGUI (web_config.c).
+ * relay_pulse_ms, siehe mqtt_client_setup.c/relay_control.c), das
+ * reedkontakt-bewusste Halten/Nachlaufen des Relais (siehe lock_control.c),
+ * der Reedkontakt selbst (siehe reed_contact.c) und die Mini-WebGUI
+ * (web_config.c).
  */
 
 #include <stdio.h>
@@ -37,6 +39,8 @@
 #include "mqtt_client_setup.h"
 #include "app_config.h"
 #include "web_config.h"
+#include "reed_contact.h"
+#include "lock_control.h"
 
 static const char *TAG = "main";
 
@@ -182,8 +186,9 @@ static void pn532_init_task(void *pvParameters)
                  cfg.pn532_bridge_tcp_port);
         // MQTT bleibt in diesem Modus bewusst aktiv (siehe Datei-Kommentar
         // oben) -- die Relaissteuerung (mqtt_client_setup.c:
-        // handle_result_message() -> relay_control_pulse()) haengt auch im
-        // Raw-Bridge-Modus daran: das Addon verarbeitet Karten zwar selbst
+        // handle_result_message() -> lock_control_notify_granted(), siehe
+        // lock_control.c) haengt auch im Raw-Bridge-Modus daran: das Addon
+        // verarbeitet Karten zwar selbst
         // (raw_auto_driver.py), meldet das Ergebnis aber weiterhin per MQTT
         // an nfc/result zurueck (siehe relay_publisher.py), worueber die
         // Firmware hier das physische Relais schaltet. Ein frueherer Versuch,
@@ -244,13 +249,26 @@ void app_main(void)
         ESP_LOGE(TAG, "Config-WebGUI konnte nicht gestartet werden (Fehler %d)", web_err);
     }
 
-    esp_err_t mqtt_err = mqtt_client_setup_init(cfg.mqtt_broker_uri, cfg.mqtt_username, cfg.mqtt_password,
-                                                 cfg.mqtt_client_id,
-                                                 cfg.topic_raw, cfg.topic_apdu_cmd, cfg.topic_apdu_resp,
-                                                 cfg.topic_result, cfg.topic_homekey_group_id,
-                                                 cfg.relay_pulse_via_mqtt, cfg.topic_relay_pulse_ms);
+    esp_err_t mqtt_err = mqtt_client_setup_init(&cfg);
     if (mqtt_err != ESP_OK) {
         ESP_LOGE(TAG, "MQTT-Client konnte nicht gestartet werden (Fehler %d)", mqtt_err);
+    }
+
+    // Nach MQTT-Init (Publish braucht einen initialisierten Client, siehe
+    // mqtt_client_setup_publish_reed_state()), unabhaengig vom PN532-Modus --
+    // der Reedkontakt hat mit dem PN532/Karten-Handling nichts zu tun.
+    esp_err_t reed_err = reed_contact_init();
+    if (reed_err != ESP_OK) {
+        ESP_LOGE(TAG, "Reedkontakt-Init fehlgeschlagen (Fehler %d)", reed_err);
+    }
+
+    // Nach relay_control_init()/reed_contact_init() (lock_control.c baut
+    // beim ersten granted-Event auf beiden auf), vor dem PN532-Start --
+    // Zutrittsvorgaenge (nfc/result) koennen ab dem MQTT-Connect jederzeit
+    // eintreffen.
+    esp_err_t lock_err = lock_control_init(cfg.lock_settle_delay_ms, cfg.lock_max_hold_ms);
+    if (lock_err != ESP_OK) {
+        ESP_LOGE(TAG, "Lock-Control-Init fehlgeschlagen (Fehler %d)", lock_err);
     }
 
     xTaskCreate(pn532_init_task, "pn532_init", 4096, NULL, 5, NULL);

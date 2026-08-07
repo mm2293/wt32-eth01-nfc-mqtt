@@ -10,11 +10,19 @@ zugewiesene IP) ist unter `http://<geraet-ip>/` eine Mini-WebGUI erreichbar,
 ueber die sich folgende, bislang fest kodierte Werte aendern lassen:
 
 - Netzwerk: DHCP oder statische IP (inkl. Gateway/Subnetzmaske/DNS), Hostname
-- MQTT: Broker-URI, Benutzername/Passwort, Client-ID, alle 5 Topics (siehe
-  PROTOCOL.md)
-- Relais-Pulsdauer: entweder fest (ms-Feld) oder per MQTT-Topic vom Addon
-  gesetzt (Toggle "Pulsdauer per MQTT setzen", siehe PROTOCOL.md ->
-  `nfc/relay_pulse_ms`)
+- MQTT: Broker-URI, Benutzername/Passwort, Client-ID, alle Topics (siehe
+  PROTOCOL.md) inkl. QoS je Topic und Retain-Flag fuer die drei
+  ESP32->Addon-Topics, sowie Clean Session (verbindungsweit)
+- Relais-Basis-Pulsdauer: entweder fest (Sekunden-Feld) oder per MQTT-Topic
+  vom Addon gesetzt (Toggle "Pulsdauer per MQTT setzen", siehe PROTOCOL.md ->
+  `nfc/relay_pulse_ms`) -- kein festes Maximum mehr, siehe Reedkontakt/
+  Schloss-Logik
+- Reedkontakt & Schloss-Logik: Topic fuer den Reedkontakt-Status
+  (`nfc/lock_reed_state`), Nachlaufzeit nach dem Wiederschliessen (fest oder
+  per MQTT, `nfc/lock_settle_delay_ms`) und eine Sicherheits-Obergrenze
+  fuers Halten (nur WebGUI, kein MQTT-Override) -- siehe PROTOCOL.md
+- PN532-Modus (Managed/Raw-Bridge): im Raw-Bridge-Modus blendet die WebGUI
+  die dann wirkungslosen Managed-only-Felder automatisch aus
 - Das Admin-Passwort der WebGUI selbst
 
 Der APDU-Relay-Timeout (wie lange die Karte zwischen Kommandos im Feld

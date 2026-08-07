@@ -39,20 +39,23 @@ esp_err_t relay_control_init(uint32_t pulse_ms)
     return err;
 }
 
-void relay_control_pulse(void)
+void relay_control_set(bool energized)
 {
-    ESP_LOGI(TAG, "Relais wird fuer %" PRIu32 " ms aktiviert", s_relay_pulse_ms);
-    gpio_set_level(RELAY_GPIO_PIN, 1);
-    vTaskDelay(pdMS_TO_TICKS(s_relay_pulse_ms));
-    gpio_set_level(RELAY_GPIO_PIN, 0);
-    ESP_LOGI(TAG, "Relais wieder deaktiviert");
+    gpio_set_level(RELAY_GPIO_PIN, energized ? 1 : 0);
+    ESP_LOGI(TAG, "Relais %s", energized ? "aktiviert" : "deaktiviert");
 }
 
 void relay_control_set_pulse_ms(uint32_t pulse_ms)
 {
     // uint32_t-Zugriffe sind auf ESP32 atomar (4-Byte-aligned) -- kein Mutex
     // noetig, obwohl dies aus dem MQTT-Event-Handler-Task heraus aufgerufen
-    // wird, waehrend relay_control_pulse() im card_event_task (main.c) laeuft.
+    // wird, waehrend relay_control_get_pulse_ms() aus lock_control.c
+    // (eigene Task) gelesen wird.
     s_relay_pulse_ms = pulse_ms;
     ESP_LOGI(TAG, "Relais-Pulsdauer per MQTT auf %" PRIu32 "ms gesetzt", pulse_ms);
+}
+
+uint32_t relay_control_get_pulse_ms(void)
+{
+    return s_relay_pulse_ms;
 }

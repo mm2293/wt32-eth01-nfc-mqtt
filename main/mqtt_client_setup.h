@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "app_config.h"
+
 // War 250 (ein einzelner PN532-Kurzframe): jetzt gross genug fuer per
 // InDataExchange-Fortsetzung ("more data"-Bit) zusammengesetzte Antworten
 // (z.B. HomeKey-ATTESTATION-Envelopes), siehe pn532_uart.c:pn532_data_exchange_once().
@@ -16,23 +18,25 @@ typedef struct {
     size_t apdu_len;
 } mqtt_apdu_cmd_t;
 
-/* topic_raw/apdu_cmd/apdu_resp/result/homekey_group_id: MQTT-Topic-Namen,
- * siehe PROTOCOL.md -- ueber die WebGUI (web_config.c) konfigurierbar statt
- * fest kodiert. client_id darf NULL/leer sein (dann generiert esp-mqtt
- * automatisch eine). Die uebergebenen Strings werden nur fuer den Aufbau der
- * Konfiguration benoetigt, esp_mqtt_client_init() kopiert sie intern.
+/* Initialisiert den MQTT-Client anhand der zur Laufzeit aus NVS geladenen
+ * Konfiguration (siehe app_config.h) -- Topic-Namen, QoS/Retain je Topic,
+ * Clean-Session-Verhalten, Zugangsdaten. cfg wird nur fuer den Aufbau der
+ * Konfiguration gelesen, nicht referenziert (Werte werden kopiert bzw. an
+ * esp_mqtt_client_init() uebergeben, das seinerseits intern kopiert).
  *
- * relay_pulse_via_mqtt: wenn true, wird zusaetzlich topic_relay_pulse_ms
- * (retained, Payload = Millisekunden als Zahl-String) abonniert und jede
- * empfangene Nachricht per relay_control_set_pulse_ms() uebernommen (siehe
- * PROTOCOL.md). Wenn false, wird dieses Topic gar nicht erst abonniert und
- * die feste, ueber die WebGUI konfigurierte Pulsdauer bleibt massgeblich. */
-esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, const char *password,
-                                  const char *client_id,
-                                  const char *topic_raw, const char *topic_apdu_cmd,
-                                  const char *topic_apdu_resp, const char *topic_result,
-                                  const char *topic_homekey_group_id,
-                                  bool relay_pulse_via_mqtt, const char *topic_relay_pulse_ms);
+ * cfg->relay_pulse_via_mqtt: wenn true, wird zusaetzlich
+ * cfg->topic_relay_pulse_ms (retained, Payload = Millisekunden als
+ * Zahl-String) abonniert und jede empfangene Nachricht per
+ * relay_control_set_pulse_ms() uebernommen (siehe PROTOCOL.md). Wenn false,
+ * wird dieses Topic gar nicht erst abonniert und die feste, ueber die
+ * WebGUI konfigurierte Pulsdauer bleibt massgeblich.
+ *
+ * cfg->pn532_raw_bridge_mode: steuert nur, ob zusaetzlich
+ * nfc/apdu_relay_timeout_ms abonniert wird -- dieses Topic wirkt sich
+ * einzig auf main.c:card_event_task() aus, die im Raw-Bridge-Modus nie
+ * laeuft (siehe PROTOCOL.md). nfc/result bleibt in BEIDEN Modi abonniert,
+ * da die Relaissteuerung unabhaengig vom PN532-Modus daran haengt. */
+esp_err_t mqtt_client_setup_init(const app_config_t *cfg);
 
 /* Meldet eine neu erkannte Karte. session_id identifiziert diesen
  * Kartenvorgang eindeutig gegenueber dem Addon (siehe nfc/apdu_cmd /
@@ -45,6 +49,11 @@ void mqtt_client_setup_publish_card(const uint8_t *uid, uint8_t uid_len, uint8_t
 void mqtt_client_setup_publish_apdu_response(uint32_t session_id, bool ok,
                                               const uint8_t *resp, size_t resp_len,
                                               const char *error);
+
+/* Meldet den Reedkontakt-Status (Tuer-/Schlossstatus, siehe reed_contact.c)
+ * auf dem konfigurierten Topic (retained/QoS wie in app_config_t
+ * eingestellt). closed=true -> Payload "closed", sonst "open". */
+void mqtt_client_setup_publish_reed_state(bool closed);
 
 /* Blockiert bis zu timeout_ms auf das naechste APDU-Kommando ODER das
  * Sessionende (nfc/result) fuer die angegebene session_id; Nachrichten mit
