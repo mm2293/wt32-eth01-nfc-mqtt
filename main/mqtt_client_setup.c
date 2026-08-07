@@ -53,6 +53,7 @@ static char s_topic_outgoing_apdu_resp[TOPIC_LEN];
 static char s_topic_incoming_homekey_group_id[TOPIC_LEN];
 static char s_topic_incoming_relay_pulse_ms[TOPIC_LEN];
 static bool s_relay_pulse_via_mqtt = false;
+static bool s_raw_bridge_mode = false;
 
 // Fest kodiertes (nicht ueber WebGUI/NVS konfigurierbares) Topic -- das
 // Addon steuert den APDU-Relay-Timeout vollstaendig selbst (z.B. hoch beim
@@ -244,11 +245,16 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
                 ESP_LOGI(TAG, "Abonniere zusaetzlich %s (Relais-Pulsdauer)", s_topic_incoming_relay_pulse_ms);
                 esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_relay_pulse_ms, 1);
             }
-            // Retained, immer abonniert (kein Toggle) -- das Addon steuert
-            // den APDU-Relay-Timeout vollstaendig selbst, ohne Umweg ueber
-            // die WebGUI (siehe mqtt_client_setup_get_apdu_relay_timeout_ms()).
-            ESP_LOGI(TAG, "Abonniere zusaetzlich %s (APDU-Relay-Timeout)", TOPIC_APDU_RELAY_TIMEOUT_MS);
-            esp_mqtt_client_subscribe(s_mqtt_client, TOPIC_APDU_RELAY_TIMEOUT_MS, 1);
+            // Retained, im Managed-Modus immer abonniert (kein eigenes
+            // Enable/Disable-Toggle wie bei relay_pulse_ms) -- das Addon
+            // steuert den APDU-Relay-Timeout vollstaendig selbst, ohne Umweg
+            // ueber die WebGUI (siehe mqtt_client_setup_get_apdu_relay_timeout_ms()).
+            // Im Raw-Bridge-Modus wirkungslos (card_event_task laeuft dort
+            // nicht, siehe main.c/PROTOCOL.md) -- daher hier uebersprungen.
+            if (!s_raw_bridge_mode) {
+                ESP_LOGI(TAG, "Abonniere zusaetzlich %s (APDU-Relay-Timeout)", TOPIC_APDU_RELAY_TIMEOUT_MS);
+                esp_mqtt_client_subscribe(s_mqtt_client, TOPIC_APDU_RELAY_TIMEOUT_MS, 1);
+            }
             break;
 
         case MQTT_EVENT_DISCONNECTED:
@@ -302,7 +308,8 @@ esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, c
                                   const char *topic_raw, const char *topic_apdu_cmd,
                                   const char *topic_apdu_resp, const char *topic_result,
                                   const char *topic_homekey_group_id,
-                                  bool relay_pulse_via_mqtt, const char *topic_relay_pulse_ms)
+                                  bool relay_pulse_via_mqtt, const char *topic_relay_pulse_ms,
+                                  bool pn532_raw_bridge_mode)
 {
     s_session_queue = xQueueCreate(8, sizeof(session_queue_item_t));
 
@@ -313,6 +320,7 @@ esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, c
     strncpy(s_topic_incoming_homekey_group_id, topic_homekey_group_id, TOPIC_LEN - 1);
     s_relay_pulse_via_mqtt = relay_pulse_via_mqtt;
     strncpy(s_topic_incoming_relay_pulse_ms, topic_relay_pulse_ms, TOPIC_LEN - 1);
+    s_raw_bridge_mode = pn532_raw_bridge_mode;
 
     // Default-Puffergroesse von esp-mqtt (1024 Byte) reicht seit
     // MQTT_APDU_MAX_LEN=2048 nicht mehr fuer ein hex-kodiertes apdu_cmd/

@@ -131,11 +131,16 @@ abonniert und die feste, ueber die WebGUI konfigurierte Pulsdauer gilt.
 Steuert, wie lange `main.c:card_event_task()` zwischen APDU-Kommandos
 (bzw. seit Kartenerkennung) auf das naechste Kommando oder `nfc/result`
 wartet, bevor die Karte freigegeben wird. Anders als bei
-`nfc/relay_pulse_ms` gibt es hier **kein** Enable/Disable-Toggle -- das
-Topic ist immer abonniert, Standard ist 3000ms (passend fuer die schnelle
-Automatik-Zutrittslogik, wo Kommandos in Millisekunden folgen). Ungueltige
-Werte (ausserhalb 500-120000 oder nicht-numerisch) werden mit einer
-Log-Warnung ignoriert, der zuletzt gueltige Wert bleibt bestehen.
+`nfc/relay_pulse_ms` gibt es hier **kein** manuelles Enable/Disable-Toggle
+ueber die WebGUI -- im Managed-Modus ist das Topic immer abonniert,
+Standard ist 3000ms (passend fuer die schnelle Automatik-Zutrittslogik, wo
+Kommandos in Millisekunden folgen). Ungueltige Werte (ausserhalb 500-120000
+oder nicht-numerisch) werden mit einer Log-Warnung ignoriert, der zuletzt
+gueltige Wert bleibt bestehen.
+
+Im Raw-Bridge-Modus wird dieses Topic gar nicht erst abonniert (siehe
+`mqtt_client_setup_init()`), da `card_event_task()` dort nie laeuft und der
+Wert somit ohnehin wirkungslos waere.
 
 Das Addon (nicht die WebGUI) steuert diesen Wert vollstaendig: z.B. hoch
 auf 30000-60000ms beim Oeffnen der interaktiven NFC-Shell (Mensch

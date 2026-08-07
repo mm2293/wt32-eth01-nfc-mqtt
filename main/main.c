@@ -248,7 +248,8 @@ void app_main(void)
                                                  cfg.mqtt_client_id,
                                                  cfg.topic_raw, cfg.topic_apdu_cmd, cfg.topic_apdu_resp,
                                                  cfg.topic_result, cfg.topic_homekey_group_id,
-                                                 cfg.relay_pulse_via_mqtt, cfg.topic_relay_pulse_ms);
+                                                 cfg.relay_pulse_via_mqtt, cfg.topic_relay_pulse_ms,
+                                                 cfg.pn532_raw_bridge_mode);
     if (mqtt_err != ESP_OK) {
         ESP_LOGE(TAG, "MQTT-Client konnte nicht gestartet werden (Fehler %d)", mqtt_err);
     }
