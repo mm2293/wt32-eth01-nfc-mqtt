@@ -321,12 +321,28 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "</fieldset>",
         cfg.net_use_dhcp ? "checked" : "", e_ip, e_mask, e_gw, e_dns, e_hostname);
 
+    size_t used = strlen(html);
+    snprintf(html + used, html_cap - used,
+        "<fieldset><legend>PN532-Modus</legend>"
+        "<label><input type=\"checkbox\" name=\"pn532_raw\" %s onclick=\"toggleRawBridgeFields(this)\"> Raw-Bridge statt Managed</label>"
+        "<p style=\"font-size:.85em;color:#555\">Managed (Standard, unmarkiert): die Firmware pollt selbst nach "
+        "Karten und relayt HomeKey/DESFire-APDUs per MQTT -- Zutrittssteuerung/Lernmodus funktionieren normal. "
+        "Raw-Bridge (markiert): kein Kartenpolling mehr, die PN532-UART wird stattdessen 1:1 als TCP-Server "
+        "exponiert, fuer direkten Zugriff durch das Addon/externe Tools (mfoc, libnfc, ...). In diesem Modus "
+        "ist die automatische Zutrittssteuerung ueber diesen Reader inaktiv (die weiter unten im MQTT-Feldset "
+        "ausgeblendeten Felder sind dann ohne Funktion). Relaissteuerung per MQTT inkl. Reedkontakt-Logik bleibt "
+        "in BEIDEN Modi unveraendert aktiv. Eine Aenderung wird erst nach dem Neustart wirksam.</p>"
+        "<label>Bridge TCP-Port (nur im Raw-Bridge-Modus relevant)"
+        "<input type=\"number\" name=\"pn532_port\" value=\"%u\" min=\"1\" max=\"65535\"></label>"
+        "</fieldset>",
+        cfg.pn532_raw_bridge_mode ? "checked" : "", (unsigned)cfg.pn532_bridge_tcp_port);
+
     char ret_raw_html[96], ret_resp_html[96], ret_reed_html[96];
     snprintf(ret_raw_html, sizeof(ret_raw_html), "<span class=\"inline\"><input type=\"checkbox\" name=\"ret_raw\" %s> Retain</span>", cfg.retain_raw ? "checked" : "");
     snprintf(ret_resp_html, sizeof(ret_resp_html), "<span class=\"inline\"><input type=\"checkbox\" name=\"ret_resp\" %s> Retain</span>", cfg.retain_apdu_resp ? "checked" : "");
     snprintf(ret_reed_html, sizeof(ret_reed_html), "<span class=\"inline\"><input type=\"checkbox\" name=\"ret_reed\" %s> Retain</span>", cfg.retain_reed_state ? "checked" : "");
 
-    size_t used = strlen(html);
+    used = strlen(html);
     snprintf(html + used, html_cap - used,
         "<fieldset><legend>MQTT</legend>"
         "<label>Broker-URI<input type=\"text\" name=\"mqtt_uri\" value=\"%s\" placeholder=\"mqtt://host:1883\"></label>"
@@ -415,19 +431,6 @@ static esp_err_t index_get_handler(httpd_req_t *req)
 
     used = strlen(html);
     snprintf(html + used, html_cap - used,
-        "<fieldset><legend>PN532-Modus</legend>"
-        "<label><input type=\"checkbox\" name=\"pn532_raw\" %s onclick=\"toggleRawBridgeFields(this)\"> Raw-Bridge statt Managed</label>"
-        "<p style=\"font-size:.85em;color:#555\">Managed (Standard, unmarkiert): die Firmware pollt selbst nach "
-        "Karten und relayt HomeKey/DESFire-APDUs per MQTT -- Zutrittssteuerung/Lernmodus funktionieren normal. "
-        "Raw-Bridge (markiert): kein Kartenpolling mehr, die PN532-UART wird stattdessen 1:1 als TCP-Server "
-        "exponiert, fuer direkten Zugriff durch das Addon/externe Tools (mfoc, libnfc, ...). In diesem Modus "
-        "ist die automatische Zutrittssteuerung ueber diesen Reader inaktiv (die oben ausgeblendeten Felder "
-        "sind dann ohne Funktion). Relaissteuerung per MQTT inkl. Reedkontakt-Logik bleibt in BEIDEN Modi "
-        "unveraendert aktiv. Eine Aenderung wird erst nach dem Neustart wirksam.</p>"
-        "<label>Bridge TCP-Port (nur im Raw-Bridge-Modus relevant)"
-        "<input type=\"number\" name=\"pn532_port\" value=\"%u\" min=\"1\" max=\"65535\"></label>"
-        "</fieldset>"
-
         "<fieldset><legend>WebGUI-Login</legend>"
         "<label>Admin-Passwort<input type=\"text\" name=\"admin_pass\" value=\"%s\"></label>"
         "</fieldset>"
@@ -473,7 +476,6 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "}"
         "</script>"
         "</body></html>",
-        cfg.pn532_raw_bridge_mode ? "checked" : "", (unsigned)cfg.pn532_bridge_tcp_port,
         e_admin_pass,
         ota_info);
 
