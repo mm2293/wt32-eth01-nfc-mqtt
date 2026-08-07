@@ -254,6 +254,15 @@ void app_main(void)
         ESP_LOGE(TAG, "MQTT-Client konnte nicht gestartet werden (Fehler %d)", mqtt_err);
     }
 
+    // Erzwingt den ersten retained Publish von nfc/relay_state, sobald MQTT
+    // bereit ist -- relay_control_init() lief vorher (vor dem Ethernet-IP-
+    // Warten), als MQTT noch nicht initialisiert war, der Publish-Versuch
+    // dort wurde also stillschweigend uebersprungen (siehe
+    // mqtt_client_setup_publish_relay_state()). Das Relais ist zu diesem
+    // Zeitpunkt garantiert noch aus (ein granted-Event kann erst nach
+    // diesem MQTT-Connect eintreffen), daher hier einfach erneut "aus" setzen.
+    relay_control_set(false);
+
     // Nach MQTT-Init (Publish braucht einen initialisierten Client, siehe
     // mqtt_client_setup_publish_reed_state()), unabhaengig vom PN532-Modus --
     // der Reedkontakt hat mit dem PN532/Karten-Handling nichts zu tun.

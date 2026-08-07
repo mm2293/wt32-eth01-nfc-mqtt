@@ -55,6 +55,12 @@ void mqtt_client_setup_publish_apdu_response(uint32_t session_id, bool ok,
  * eingestellt). closed=true -> Payload "closed", sonst "open". */
 void mqtt_client_setup_publish_reed_state(bool closed);
 
+/* Meldet den Relais-Zustand (siehe relay_control.c) auf dem konfigurierten
+ * Topic (retained/QoS wie in app_config_t eingestellt). energized=true ->
+ * Payload "on", sonst "off". Wird bei jedem relay_control_set()-Aufruf
+ * automatisch mitgerufen. */
+void mqtt_client_setup_publish_relay_state(bool energized);
+
 /* Blockiert bis zu timeout_ms auf das naechste APDU-Kommando ODER das
  * Sessionende (nfc/result) fuer die angegebene session_id; Nachrichten mit
  * abweichender session_id werden intern verworfen (nicht relevant, aber

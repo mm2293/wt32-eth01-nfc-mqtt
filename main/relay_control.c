@@ -12,6 +12,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "mqtt_client_setup.h"
+
 static const char *TAG = "relay_control";
 
 #define RELAY_GPIO_PIN   GPIO_NUM_4
@@ -43,6 +45,7 @@ void relay_control_set(bool energized)
 {
     gpio_set_level(RELAY_GPIO_PIN, energized ? 1 : 0);
     ESP_LOGI(TAG, "Relais %s", energized ? "aktiviert" : "deaktiviert");
+    mqtt_client_setup_publish_relay_state(energized);
 }
 
 void relay_control_set_pulse_ms(uint32_t pulse_ms)

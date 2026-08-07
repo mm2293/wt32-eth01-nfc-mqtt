@@ -209,6 +209,20 @@ stabile 50ms-Polls, siehe `REED_DEBOUNCE_STABLE_POLLS`) bei jedem
 Statuswechsel publiziert, sowie einmalig kurz nach dem Boot (erzwungener
 erster Publish, sobald der erste stabile Pegel vorliegt).
 
+### `nfc/relay_state` (ESP32 -> Addon, retained)
+
+```
+on   (KEIN JSON -- reiner Text "on" oder "off" als Payload)
+```
+
+Aktueller Relais-Zustand, siehe `relay_control.c:relay_control_set()`. Wird
+bei JEDEM Schaltvorgang publiziert -- sowohl beim initialen Basis-Puls als
+auch beim spaeteren reedkontakt-bewussten Halten/Freigeben (siehe
+`lock_control.c`). Direkt nach dem MQTT-Connect stoesst `main.c:app_main()`
+zusaetzlich einmalig einen Publish mit dem (garantiert korrekten) Zustand
+"off" an, damit der retained Wert auch nach einem Reboot ohne Zutrittsvorgang
+aktuell ist.
+
 ### `nfc/lock_settle_delay_ms` (Addon -> ESP32, retained, optional)
 
 ```

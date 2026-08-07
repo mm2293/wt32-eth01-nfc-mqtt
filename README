@@ -11,12 +11,13 @@ ueber die sich folgende, bislang fest kodierte Werte aendern lassen:
 
 - Netzwerk: DHCP oder statische IP (inkl. Gateway/Subnetzmaske/DNS), Hostname
 - MQTT: Broker-URI, Benutzername/Passwort, Client-ID, alle Topics (siehe
-  PROTOCOL.md) inkl. QoS je Topic und Retain-Flag fuer die drei
+  PROTOCOL.md) inkl. QoS je Topic und Retain-Flag fuer die vier
   ESP32->Addon-Topics, sowie Clean Session (verbindungsweit)
 - Relais-Basis-Pulsdauer: entweder fest (Sekunden-Feld) oder per MQTT-Topic
   vom Addon gesetzt (Toggle "Pulsdauer per MQTT setzen", siehe PROTOCOL.md ->
   `nfc/relay_pulse_ms`) -- kein festes Maximum mehr, siehe Reedkontakt/
-  Schloss-Logik
+  Schloss-Logik. Zusaetzlich Topic fuer den Relais-Zustand selbst
+  (`nfc/relay_state`, "on"/"off", retained)
 - Reedkontakt & Schloss-Logik: Topic fuer den Reedkontakt-Status
   (`nfc/lock_reed_state`) und Nachlaufzeit nach dem Wiederschliessen (fest
   oder per MQTT, `nfc/lock_settle_delay_ms`) -- siehe PROTOCOL.md. Das

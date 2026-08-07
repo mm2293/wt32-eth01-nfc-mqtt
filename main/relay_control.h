@@ -22,7 +22,9 @@ esp_err_t relay_control_init(uint32_t pulse_ms);
 /* Low-Level: Relais-GPIO direkt setzen (nicht blockierend). Von
  * lock_control.c genutzt, um das Relais ueber die reine Basis-Pulsdauer
  * hinaus gehalten zu koennen (z.B. solange die Tuer laut Reedkontakt noch
- * nicht wieder in Schliessposition ist). */
+ * nicht wieder in Schliessposition ist). Meldet den neuen Zustand
+ * zusaetzlich per MQTT (siehe mqtt_client_setup_publish_relay_state(),
+ * Topic nfc/relay_state). */
 void relay_control_set(bool energized);
 
 /* Aendert die Basis-Pulsdauer zur Laufzeit, z.B. wenn das Addon sie per

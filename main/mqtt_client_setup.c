@@ -26,9 +26,12 @@
  *   nfc/lock_reed_state (ESP32 -> Addon, retained) Payload "closed"/"open",
  *                                    siehe reed_contact.c -- Status des am
  *                                    Schloss angebrachten Reedkontakts (IO2).
+ *   nfc/relay_state (ESP32 -> Addon, retained) Payload "on"/"off", siehe
+ *                                    relay_control.c -- wird bei jedem
+ *                                    relay_control_set()-Aufruf aktualisiert.
  *
  * Topic-Namen (ausser dem fest kodierten nfc/apdu_relay_timeout_ms) sowie
- * QoS je Topic, Retain-Flag fuer die drei ESP32->Addon-Topics und die
+ * QoS je Topic, Retain-Flag fuer die vier ESP32->Addon-Topics und die
  * Clean-Session-Einstellung sind ueber die WebGUI (web_config.c) konfigurierbar,
  * siehe app_config.h.
  */
@@ -63,6 +66,7 @@ static char s_topic_outgoing_apdu_resp[TOPIC_LEN];
 static char s_topic_incoming_homekey_group_id[TOPIC_LEN];
 static char s_topic_incoming_relay_pulse_ms[TOPIC_LEN];
 static char s_topic_outgoing_reed_state[TOPIC_LEN];
+static char s_topic_outgoing_relay_state[TOPIC_LEN];
 static char s_topic_incoming_lock_settle_ms[TOPIC_LEN];
 static bool s_relay_pulse_via_mqtt = false;
 static bool s_lock_settle_via_mqtt = false;
@@ -79,10 +83,12 @@ static uint8_t s_qos_homekey_group_id;
 static uint8_t s_qos_relay_pulse_ms;
 static uint8_t s_qos_apdu_relay_timeout_ms;
 static uint8_t s_qos_reed_state;
+static uint8_t s_qos_relay_state;
 static uint8_t s_qos_lock_settle_ms;
 static bool s_retain_raw;
 static bool s_retain_apdu_resp;
 static bool s_retain_reed_state;
+static bool s_retain_relay_state;
 
 // Fest kodiertes (nicht ueber WebGUI/NVS konfigurierbares) Topic -- das
 // Addon steuert den APDU-Relay-Timeout vollstaendig selbst (z.B. hoch beim
@@ -368,6 +374,7 @@ esp_err_t mqtt_client_setup_init(const app_config_t *cfg)
     s_relay_pulse_via_mqtt = cfg->relay_pulse_via_mqtt;
     strncpy(s_topic_incoming_relay_pulse_ms, cfg->topic_relay_pulse_ms, TOPIC_LEN - 1);
     strncpy(s_topic_outgoing_reed_state, cfg->topic_reed_state, TOPIC_LEN - 1);
+    strncpy(s_topic_outgoing_relay_state, cfg->topic_relay_state, TOPIC_LEN - 1);
     s_lock_settle_via_mqtt = cfg->lock_settle_delay_via_mqtt;
     strncpy(s_topic_incoming_lock_settle_ms, cfg->topic_lock_settle_delay_ms, TOPIC_LEN - 1);
     s_raw_bridge_mode = cfg->pn532_raw_bridge_mode;
@@ -380,10 +387,12 @@ esp_err_t mqtt_client_setup_init(const app_config_t *cfg)
     s_qos_relay_pulse_ms = cfg->qos_relay_pulse_ms;
     s_qos_apdu_relay_timeout_ms = cfg->qos_apdu_relay_timeout_ms;
     s_qos_reed_state = cfg->qos_reed_state;
+    s_qos_relay_state = cfg->qos_relay_state;
     s_qos_lock_settle_ms = cfg->qos_lock_settle_ms;
     s_retain_raw = cfg->retain_raw;
     s_retain_apdu_resp = cfg->retain_apdu_resp;
     s_retain_reed_state = cfg->retain_reed_state;
+    s_retain_relay_state = cfg->retain_relay_state;
 
     if (!cfg->mqtt_clean_session && cfg->mqtt_client_id[0] == '\0') {
         // Persistent Session ohne feste Client-ID ist wirkungslos: esp-mqtt
@@ -496,6 +505,19 @@ void mqtt_client_setup_publish_reed_state(bool closed)
     ESP_LOGI(TAG, "Reedkontakt-Status: %s", payload);
     esp_mqtt_client_publish(s_mqtt_client, s_topic_outgoing_reed_state, payload, 0,
                              s_qos_reed_state, s_retain_reed_state ? 1 : 0);
+}
+
+void mqtt_client_setup_publish_relay_state(bool energized)
+{
+    if (s_mqtt_client == NULL) {
+        ESP_LOGW(TAG, "MQTT-Client noch nicht initialisiert, ueberspringe Relais-Status-Publish");
+        return;
+    }
+
+    const char *payload = energized ? "on" : "off";
+    ESP_LOGI(TAG, "Relais-Status: %s", payload);
+    esp_mqtt_client_publish(s_mqtt_client, s_topic_outgoing_relay_state, payload, 0,
+                             s_qos_relay_state, s_retain_relay_state ? 1 : 0);
 }
 
 bool mqtt_client_setup_wait_apdu_cmd(uint32_t session_id, mqtt_apdu_cmd_t *out_cmd,

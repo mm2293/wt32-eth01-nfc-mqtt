@@ -61,6 +61,7 @@ typedef struct {
     uint8_t  qos_relay_pulse_ms;
     uint8_t  qos_apdu_relay_timeout_ms;
     uint8_t  qos_reed_state;
+    uint8_t  qos_relay_state;
 
     // MQTT: Retain-Flag beim Publish -- nur fuer ESP32->Addon-Topics
     // relevant, bei Subscribe-only-Topics bestimmt der Publisher (Addon)
@@ -68,6 +69,7 @@ typedef struct {
     bool     retain_raw;
     bool     retain_apdu_resp;
     bool     retain_reed_state;
+    bool     retain_relay_state;
 
     // Relais
     uint32_t relay_pulse_ms;
@@ -77,6 +79,10 @@ typedef struct {
     // false: relay_pulse_ms wird fest verwendet (Standardverhalten).
     bool     relay_pulse_via_mqtt;
     char     topic_relay_pulse_ms[APP_CFG_STR_LEN];
+
+    // Relais-Zustand (ESP32 -> Addon, siehe relay_control.c). Publiziert
+    // retained bei jedem relay_control_set()-Aufruf, Payload "on"/"off".
+    char     topic_relay_state[APP_CFG_STR_LEN];
 
     // Reedkontakt (Tuer-/Schlossstatus, siehe reed_contact.c). Fest
     // verdrahtet auf IO2 (Input mit internem Pull-Up, Kontakt gegen GND --
