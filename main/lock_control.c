@@ -18,6 +18,7 @@ static const char *TAG = "lock_control";
 
 static QueueHandle_t s_grant_queue = NULL;
 static uint32_t s_settle_delay_ms = 5000;
+static bool s_reed_enabled = true;
 
 // Wartet unbegrenzt, bis reed_contact_is_closed()==true.
 static void wait_until_reed_closed(void)
@@ -55,28 +56,36 @@ static void lock_control_task(void *pvParameters)
         relay_control_set(true);
         vTaskDelay(pdMS_TO_TICKS(pulse_ms));
 
-        // Reedkontakt-bewusstes Halten: das Schloss darf erst dann wirklich
-        // schliessen (Relais aus), wenn es tatsaechlich in Schliessposition
-        // ist (Reedkontakt "geschlossen") UND das ueber die Nachlaufzeit
-        // stabil bleibt -- sonst kann das Schloss bei geoeffneter Tuer
-        // mechanisch gar nicht einrasten (siehe Erklaerung in lock_control.h).
-        // Unbegrenztes Warten -- keine Sicherheits-Obergrenze mehr.
-        while (1) {
-            wait_until_reed_closed();
-            if (wait_settle_delay_or_reopen(s_settle_delay_ms)) {
-                break;  // stabil geschlossen ueber die volle Nachlaufzeit -- fertig
+        if (s_reed_enabled) {
+            // Reedkontakt-bewusstes Halten: das Schloss darf erst dann
+            // wirklich schliessen (Relais aus), wenn es tatsaechlich in
+            // Schliessposition ist (Reedkontakt "geschlossen") UND das
+            // ueber die Nachlaufzeit stabil bleibt -- sonst kann das
+            // Schloss bei geoeffneter Tuer mechanisch gar nicht einrasten
+            // (siehe Erklaerung in lock_control.h). Unbegrenztes Warten --
+            // keine Sicherheits-Obergrenze mehr.
+            while (1) {
+                wait_until_reed_closed();
+                if (wait_settle_delay_or_reopen(s_settle_delay_ms)) {
+                    break;  // stabil geschlossen ueber die volle Nachlaufzeit -- fertig
+                }
+                ESP_LOGI(TAG, "Reedkontakt waehrend Nachlaufzeit wieder offen, warte erneut auf 'geschlossen'");
             }
-            ESP_LOGI(TAG, "Reedkontakt waehrend Nachlaufzeit wieder offen, warte erneut auf 'geschlossen'");
         }
+        // reed_enabled=false: kein Reedkontakt vorhanden, reed_contact_is_closed()
+        // wuerde ohne laufende Task nie true liefern und das Relais faelschlich
+        // fuer immer aktiv halten -- daher hier direkt weiter zum Ausschalten,
+        // wie vor Einfuehrung der Reedkontakt-Logik (nur Basis-Puls).
 
         relay_control_set(false);
         ESP_LOGI(TAG, "Schliessvorgang abgeschlossen, Relais deaktiviert");
     }
 }
 
-esp_err_t lock_control_init(uint32_t settle_delay_ms)
+esp_err_t lock_control_init(uint32_t settle_delay_ms, bool reed_enabled)
 {
     s_settle_delay_ms = settle_delay_ms;
+    s_reed_enabled = reed_enabled;
 
     s_grant_queue = xQueueCreate(4, sizeof(uint8_t));
     if (s_grant_queue == NULL) {
@@ -84,7 +93,8 @@ esp_err_t lock_control_init(uint32_t settle_delay_ms)
     }
 
     xTaskCreate(lock_control_task, "lock_control", 3072, NULL, 5, NULL);
-    ESP_LOGI(TAG, "Lock-Control gestartet (Nachlaufzeit %" PRIu32 "ms)", s_settle_delay_ms);
+    ESP_LOGI(TAG, "Lock-Control gestartet (Nachlaufzeit %" PRIu32 "ms, Reedkontakt %s)",
+             s_settle_delay_ms, s_reed_enabled ? "aktiv" : "deaktiviert");
     return ESP_OK;
 }
 

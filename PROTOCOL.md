@@ -61,20 +61,55 @@ eine Warnung).
 
 Die Pin-Zuordnung fuer Relais, Reedkontakt, Schalter/Taster und die
 PN532-UART (TX/RX) ist ueber die WebGUI aus `app_config.h:APP_CFG_GPIO_POOL`
-waehlbar (WT32-ETH01: IO39, IO36, IO15, IO14, IO12, IO5, IO4, IO2 -- die
-nicht fest fuer Ethernet/Flash/Boot/USB-Log reservierten, herausgefuehrten
-Pins). IO39/IO36 sind Input-only und daher fuer Relais/PN532-TX nicht
-waehlbar (siehe `app_config_gpio_supports_output()`). Jeder Pin darf nur
+waehlbar (WT32-ETH01: **IO15, IO14, IO12, IO4, IO2**). Jeder Pin darf nur
 einer Funktion zugewiesen sein -- `web_config.c:save_post_handler()` prueft
-alle fuenf Zuordnungen beim Speichern auf Duplikate und verwirft bei einem
+alle Zuordnungen beim Speichern auf Duplikate und verwirft bei einem
 Konflikt die GESAMTE neue Zuordnung (die vorherige bleibt unveraendert
 bestehen). Eine Aenderung wird erst nach dem Neustart wirksam. Defaults:
 Relais IO4, Reedkontakt IO2, Schalter IO12, PN532 TX IO14, PN532 RX IO15
 (entspricht dem bisherigen, fest kodierten Verhalten).
 
-IO12 ist ein Boot-Strapping-Pin (Flash-Spannungsauswahl): die Firmware
-nutzt dort ausschliesslich den internen Pull-Up (kein externer noetig/
-empfohlen), damit die Strapping-Erkennung beim Booten unbeeinflusst bleibt.
+Aus dem Pool entfernte Pins und warum:
+
+- **IO39, IO36** waren urspruenglich im Pool, sind aber bewusst entfernt:
+  das sind am ESP32 reine ADC1-Pins (GPIO 34-39) OHNE jede interne
+  Pull-Up/Pull-Down-Schaltung -- `.pull_up_en` in `gpio_config()` wird dort
+  von der Hardware schlicht ignoriert. Auf echter Hardware reproduziert:
+  ein unbeschalteter Schalterkontakt-Pin auf IO36 loeste durch
+  elektrostatische/kapazitive Stoereinstreuung (Handbewegung in
+  Boardnaehe) wiederholt faelschlich Zutrittsvorgaenge aus. Umstellung auf
+  IO12 (echter, wenn auch schwacher, interner Pull-Up) behob das Problem.
+- **IO5** ist ebenfalls entfernt (Boot-Strapping-Pin MTDO, SDIO-Slave-
+  Timing) -- vorsorglich, ohne dass dort ein konkretes Problem
+  reproduziert wurde.
+- **IO12** bleibt trotz Boot-Strapping-Rolle (Flash-Spannungsauswahl) im
+  Pool: hat sich auf echter Hardware als Schalterkontakt-Eingang bewaehrt.
+  Die Firmware nutzt dort ausschliesslich den internen Pull-Up (kein
+  externer noetig/empfohlen), damit die Strapping-Erkennung beim Booten
+  unbeeinflusst bleibt.
+
+Jede der vier Funktionen ist ausserdem einzeln per WebGUI-Checkbox
+aktivierbar/deaktivierbar (Pin-Auswahl erscheint erst bei aktivierter
+Checkbox) -- `app_config.h`: `relay_enabled`, `reed_enabled`,
+`switch_enabled`, `pn532_enabled`. Defaults: `relay_enabled`/`reed_enabled`/
+`pn532_enabled` = `true` (bisheriges Verhalten, immer aktiv), nur
+`switch_enabled` = `false` (siehe unten).
+
+- **`relay_enabled=false`**: `relay_control_init()` wird nicht aufgerufen,
+  der Pin bleibt unkonfiguriert. `relay_control_set()` (siehe
+  `relay_control.c`) faengt das defensiv ab -- kein GPIO-Zugriff, kein
+  `nfc/relay_state`-Publish, nur eine Log-Warnung. `lock_control.c` laeuft
+  unveraendert weiter und "schaltet" dabei effektiv ins Leere.
+- **`reed_enabled=false`**: `reed_contact_init()` wird nicht aufgerufen.
+  `lock_control_init()` bekommt das als zweiten Parameter mit und
+  ueberspringt die komplette reed-abhaengige Halte-/Nachlauflogik --
+  sonst wuerde `reed_contact_is_closed()` ohne laufende Task nie `true`
+  liefern und das Relais nach jedem Zutritt fuer immer aktiv bleiben.
+  Verhaelt sich dann wie vor Einfuehrung der Reedkontakt-Logik: nur der
+  Basis-Puls (`nfc/relay_pulse_ms`).
+- **`pn532_enabled=false`**: `pn532_init_task()` (`main.c`) beendet sich
+  sofort, ohne UART/SAM/Polling/Bridge zu starten -- fuer Bring-up/Tests
+  von Relais/Reedkontakt/Schalter ohne angeschlossenes PN532-Modul.
 
 Der Schalter-/Tasterkontakt (siehe `switch_contact.c`) ist verdrahtungs-
 und entprellungstechnisch identisch zum Reedkontakt (Input mit internem
@@ -86,17 +121,17 @@ danach reedkontakt-bewusstes Halten/Nachlaufen, siehe `lock_control.c`).
 Die Oeffnungsflanke (Loslassen) loest nichts aus, ein Dauerdruecken feuert
 also nur einmal.
 
-**`switch_enabled`** (`app_config.h`, Default `false`, WebGUI-Checkbox
-"Schalterkontakt aktivieren"): `switch_contact_init()` wird nur aufgerufen,
-wenn dieses Flag gesetzt ist (siehe `main.c:app_main()`). Grund: ein
-unbeschalteter Eingang haengt nur am hochohmigen internen Pull-Up und ist
-damit anfaellig fuer elektrostatische/kapazitive Stoereinstreuung (z.B.
-eine Hand in Boardnaehe) -- auf echter Hardware reproduziert, dass das
+**`switch_enabled`** (Default `false`, WebGUI-Checkbox "Schalter/Taster
+verwenden"): einziges der vier Enable-Flags mit Default `false` statt
+`true`. Grund: ein unbeschalteter Eingang haengt nur am hochohmigen
+internen Pull-Up und ist damit anfaellig fuer elektrostatische/kapazitive
+Stoereinstreuung -- s.o., auf echter Hardware reproduziert, dass das
 faelschlich `lock_control_notify_granted()` ausloest und damit das Schloss
 ungewollt oeffnet. Der Reedkontakt hat dasselbe Grundproblem (identische
-Entprellung/Pull-Up), aber keine analoge Sicherung, weil er selbst nie
-etwas ausloest (siehe oben) -- Flattern dort ist bestenfalls Lograuschen
-(`reed_contact: Statuswechsel erkannt`), nicht sicherheitsrelevant.
+Entprellung/Pull-Up), braucht aber keine analoge Sicherung, weil er selbst
+nie etwas ausloest (siehe oben) -- Flattern dort ist bestenfalls
+Lograuschen (`reed_contact: Statuswechsel erkannt`), nicht
+sicherheitsrelevant, und `reed_enabled` ist daher standardmaessig aktiv.
 
 ## Topics (nur im Managed-Modus relevant)
 

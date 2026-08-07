@@ -29,8 +29,14 @@
  *
  * Laeuft in einer eigenen Task (nicht im MQTT-Event-Handler-Task), da ein
  * Haltevorgang je nach Tuersituation lange dauern kann.
- */
-esp_err_t lock_control_init(uint32_t settle_delay_ms);
+ *
+ * reed_enabled: false, wenn app_config.h:reed_enabled deaktiviert ist (kein
+ * Reedkontakt angeschlossen/reed_contact_init() nie aufgerufen) -- die
+ * Schritte 2+3 werden dann komplett uebersprungen, sonst wuerde das Relais
+ * nach jedem Zutritt fuer immer aktiv bleiben (reed_contact_is_closed()
+ * liefert ohne laufende Task nie true). Verhaelt sich dann wie vor
+ * Einfuehrung der Reedkontakt-Logik: nur der Basis-Puls. */
+esp_err_t lock_control_init(uint32_t settle_delay_ms, bool reed_enabled);
 
 /* Signalisiert einen granted:true-Zutrittsvorgang. Nicht blockierend --
  * darf und soll aus dem MQTT-Event-Handler-Task aufgerufen werden (siehe

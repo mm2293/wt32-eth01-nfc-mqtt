@@ -385,26 +385,40 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     used = strlen(html);
     snprintf(html + used, html_cap - used,
         "<fieldset><legend>GPIO-Zuordnung</legend>"
-        "<p style=\"font-size:.85em;color:#555\">Pin-Zuordnung fuer Relais, Reedkontakt, Schalter/Taster und "
-        "die PN532-UART. IO39/IO36 sind nur als Eingang nutzbar (kein Ausgangstreiber), daher bei Relais und "
-        "PN532-TX nicht waehlbar. Jeder Pin darf nur einer Funktion zugewiesen sein -- ein Speichern mit "
-        "doppelt vergebenem Pin wird abgelehnt, die vorherige Zuordnung bleibt dann unveraendert bestehen. "
-        "IO12 ist ein Boot-Strapping-Pin (Flash-Spannungsauswahl): nur mit internem Pull-Up verwenden "
-        "(Standard dieser Firmware fuer Reedkontakt/Schalter), keinen externen Pull-Up hinzufuegen. Eine "
+        "<p style=\"font-size:.85em;color:#555\">Jede Funktion einzeln aktivierbar -- die Pin-Auswahl "
+        "erscheint erst, wenn die zugehoerige Checkbox gesetzt ist (nur dann wird der Pin ueberhaupt "
+        "konfiguriert). Jeder Pin darf nur einer Funktion zugewiesen sein -- ein Speichern mit doppelt "
+        "vergebenem Pin wird abgelehnt, die vorherige Zuordnung bleibt dann unveraendert bestehen. Eine "
         "Aenderung wird erst nach dem Neustart wirksam.</p>"
-        "<div class=\"row\"><div><label>Relais (Ausgang)%s</label></div>"
-        "<div><label>Reedkontakt (Eingang)%s</label></div></div>"
-        "<div class=\"row\"><div><label>Schalter/Taster (Eingang, loest wie ein NFC-Zutritt aus)%s</label></div>"
-        "<div><label>PN532 TX (Ausgang, -&gt; PN532 RX)%s</label></div></div>"
-        "<label>PN532 RX (Eingang, PN532 TX -&gt;)%s</label>"
-        "<label><input type=\"checkbox\" name=\"switch_en\" %s> Schalterkontakt aktivieren</label>"
-        "<p style=\"font-size:.85em;color:#555\">NUR aktivieren, wenn am oben gewaehlten Pin tatsaechlich ein "
-        "Taster/Schalter angeschlossen ist. Ein unbeschalteter Pin haengt nur am hochohmigen internen Pull-Up "
-        "und ist anfaellig fuer elektrostatische/kapazitive Stoereinstreuung (z.B. eine Hand in Boardnaehe) -- "
-        "das wuerde sonst faelschlich einen Zutrittsvorgang ausloesen. Standard: deaktiviert.</p>"
+
+        "<label><input type=\"checkbox\" name=\"relay_en\" %s onclick=\"toggleRelayGpio(this)\"> Relais verwenden</label>"
+        "<div id=\"relayGpioField\"><label>Relais-Pin (Ausgang)%s</label></div>"
+
+        "<label><input type=\"checkbox\" name=\"reed_en\" %s onclick=\"toggleReedGpio(this)\"> Reedkontakt verwenden</label>"
+        "<div id=\"reedGpioField\"><label>Reedkontakt-Pin (Eingang)%s</label>"
+        "<p style=\"font-size:.85em;color:#555\">Deaktiviert: das Relais schaltet nach einem Zutritt nur "
+        "noch den einfachen Basis-Puls (kein reedkontakt-bewusstes Halten/Nachlaufen mehr).</p></div>",
+        cfg.relay_enabled ? "checked" : "", sel_gpio_relay,
+        cfg.reed_enabled ? "checked" : "", sel_gpio_reed);
+
+    used = strlen(html);
+    snprintf(html + used, html_cap - used,
+        "<label><input type=\"checkbox\" name=\"switch_en\" %s onclick=\"toggleSwitchGpio(this)\"> Schalter/Taster verwenden</label>"
+        "<div id=\"switchGpioField\"><label>Schalter-Pin (Eingang, loest wie ein NFC-Zutritt aus)%s</label>"
+        "<p style=\"font-size:.85em;color:#555\">NUR aktivieren, wenn am gewaehlten Pin tatsaechlich ein "
+        "Taster/Schalter angeschlossen ist. Ein unbeschalteter Pin haengt nur am internen Pull-Up und ist "
+        "anfaellig fuer elektrostatische/kapazitive Stoereinstreuung (z.B. eine Hand in Boardnaehe) -- das "
+        "wuerde sonst faelschlich einen Zutrittsvorgang ausloesen.</p></div>"
+
+        "<label><input type=\"checkbox\" name=\"pn532_en\" %s onclick=\"togglePn532Gpio(this)\"> PN532 verwenden</label>"
+        "<div id=\"pn532GpioField\">"
+        "<div class=\"row\"><div><label>PN532 TX-Pin (Ausgang, -&gt; PN532 RX)%s</label></div>"
+        "<div><label>PN532 RX-Pin (Eingang, PN532 TX -&gt;)%s</label></div></div>"
+        "<p style=\"font-size:.85em;color:#555\">Deaktiviert: kein Kartenpolling/Raw-Bridge -- fuers "
+        "Bring-up/Testen von Relais/Reedkontakt/Schalter ohne angeschlossenes PN532-Modul.</p></div>"
         "</fieldset>",
-        sel_gpio_relay, sel_gpio_reed, sel_gpio_switch, sel_gpio_pn532_tx, sel_gpio_pn532_rx,
-        cfg.switch_enabled ? "checked" : "");
+        cfg.switch_enabled ? "checked" : "", sel_gpio_switch,
+        cfg.pn532_enabled ? "checked" : "", sel_gpio_pn532_tx, sel_gpio_pn532_rx);
 
     char ret_raw_html[96], ret_resp_html[96], ret_reed_html[96], ret_relaystate_html[96];
     snprintf(ret_raw_html, sizeof(ret_raw_html), "<span class=\"inline\"><input type=\"checkbox\" name=\"ret_raw\" %s> Retain</span>", cfg.retain_raw ? "checked" : "");
@@ -476,8 +490,8 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     used = strlen(html);
     snprintf(html + used, html_cap - used,
         "<fieldset><legend>Reedkontakt &amp; Schloss-Logik</legend>"
-        "<p style=\"font-size:.85em;color:#555\">Reedkontakt an IO2 (fest verdrahtet, Input mit internem "
-        "Pull-Up gegen GND) meldet, ob das Schloss in Schliessposition ist. Nach einem gewaehrten Zutritt "
+        "<p style=\"font-size:.85em;color:#555\">Reedkontakt (Pin siehe GPIO-Zuordnung oben, Input mit "
+        "internem Pull-Up gegen GND) meldet, ob das Schloss in Schliessposition ist. Nach einem gewaehrten Zutritt "
         "(<code>nfc/result</code> mit <code>granted:true</code>) haelt die Firmware das Relais so lange aktiv, "
         "wie der Reedkontakt \"nicht geschlossen\" meldet (z.B. weil die Tuer noch offen steht), plus der "
         "folgenden Nachlaufzeit nach dem Wiederschliessen. Siehe PROTOCOL.md fuer Details.</p>"
@@ -531,6 +545,14 @@ static esp_err_t index_get_handler(httpd_req_t *req)
         "document.getElementById('managedOnlyFields').style.display=cb.checked?'none':'block';"
         "}"
         "toggleRawBridgeFields(document.querySelector('input[name=pn532_raw]'));"
+        "function toggleRelayGpio(cb){document.getElementById('relayGpioField').style.display=cb.checked?'block':'none';}"
+        "toggleRelayGpio(document.querySelector('input[name=relay_en]'));"
+        "function toggleReedGpio(cb){document.getElementById('reedGpioField').style.display=cb.checked?'block':'none';}"
+        "toggleReedGpio(document.querySelector('input[name=reed_en]'));"
+        "function toggleSwitchGpio(cb){document.getElementById('switchGpioField').style.display=cb.checked?'block':'none';}"
+        "toggleSwitchGpio(document.querySelector('input[name=switch_en]'));"
+        "function togglePn532Gpio(cb){document.getElementById('pn532GpioField').style.display=cb.checked?'block':'none';}"
+        "togglePn532Gpio(document.querySelector('input[name=pn532_en]'));"
         "async function uploadOta(){"
         "var f=document.getElementById('otaFile').files[0];"
         "var s=document.getElementById('otaStatus');"
@@ -622,11 +644,13 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     cfg.retain_reed_state = form_get_bool(body, "ret_reed");
     cfg.retain_relay_state = form_get_bool(body, "ret_relaystate");
 
+    cfg.reed_enabled = form_get_bool(body, "reed_en");
     form_get(body, "t_reed", cfg.topic_reed_state, sizeof(cfg.topic_reed_state));
     if (cfg.topic_reed_state[0] == '\0') {
         strncpy(cfg.topic_reed_state, "nfc/lock_reed_state", sizeof(cfg.topic_reed_state) - 1);
     }
 
+    cfg.relay_enabled = form_get_bool(body, "relay_en");
     cfg.relay_pulse_via_mqtt = form_get_bool(body, "relay_mqtt");
     form_get(body, "t_relay_ms", cfg.topic_relay_pulse_ms, sizeof(cfg.topic_relay_pulse_ms));
     if (cfg.topic_relay_pulse_ms[0] == '\0') {
@@ -660,6 +684,7 @@ static esp_err_t save_post_handler(httpd_req_t *req)
         strncpy(cfg.admin_password, admin_pass, sizeof(cfg.admin_password) - 1);
     }
 
+    cfg.pn532_enabled = form_get_bool(body, "pn532_en");
     cfg.pn532_raw_bridge_mode = form_get_bool(body, "pn532_raw");
     char pn532_port_str[8];
     form_get(body, "pn532_port", pn532_port_str, sizeof(pn532_port_str));

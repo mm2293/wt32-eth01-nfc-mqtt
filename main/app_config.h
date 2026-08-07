@@ -19,16 +19,36 @@
 
 // GPIO-Pool fuer frei zuweisbare Funktionen (Relais, Reedkontakt, Schalter,
 // PN532 TX/RX) -- laut Pinout-Diagramm des WT32-ETH01 die nicht fest fuer
-// Ethernet/Flash/Boot/USB-Log reservierten, herausgefuehrten Pins. IO39 und
-// IO36 sind Input-only (siehe app_config_gpio_supports_output()).
-#define APP_CFG_GPIO_POOL_LEN 8
+// Ethernet/Flash/Boot/USB-Log reservierten, herausgefuehrten Pins.
+//
+// IO39/IO36 sind bewusst NICHT im Pool: das sind am ESP32 reine ADC1-Pins
+// (GPIO 34-39) OHNE jede interne Pull-Up/Pull-Down-Schaltung -- anders als
+// bei den uebrigen Pins wird .pull_up_en in gpio_config() dort von der
+// Hardware schlicht ignoriert. Unbeschaltet haengt der Pin dadurch komplett
+// in der Luft und ist extrem anfaellig fuer elektrostatische/kapazitive
+// Stoereinstreuung (auf echter Hardware reproduziert: Handbewegung in
+// Boardnaehe loeste ueber einen so haengenden Schalterkontakt-Pin
+// faelschlich Zutrittsvorgaenge aus). Fuer Reedkontakt/Schalter (auf
+// internen Pull-Up angewiesen) unbrauchbar, fuer Relais/PN532-TX ohnehin
+// als Input-only nie waehlbar gewesen.
+//
+// IO5 ist ebenfalls NICHT im Pool: Boot-Strapping-Pin (MTDO, bestimmt u.a.
+// SDIO-Slave-Timing) -- auf Wunsch vorsorglich entfernt, obwohl (anders als
+// bei IO39/IO36) kein konkretes Problem damit reproduziert wurde. IO12 ist
+// zwar ebenfalls ein Strapping-Pin (Flash-Spannungsauswahl), bleibt aber im
+// Pool, da er sich auf echter Hardware als Schalterkontakt-Eingang bereits
+// bewaehrt hat (siehe PROTOCOL.md).
+#define APP_CFG_GPIO_POOL_LEN 5
 extern const uint8_t APP_CFG_GPIO_POOL[APP_CFG_GPIO_POOL_LEN];
 
 /* true, wenn pin Teil von APP_CFG_GPIO_POOL ist. */
 bool app_config_gpio_in_pool(uint8_t pin);
 
-/* true, wenn pin Teil von APP_CFG_GPIO_POOL UND als Ausgang nutzbar ist
- * (also nicht IO39/IO36) -- fuer Relais und PN532-TX relevant. */
+/* true, wenn pin Teil von APP_CFG_GPIO_POOL UND als Ausgang nutzbar ist --
+ * aktuell deckungsgleich mit app_config_gpio_in_pool(), da alle Pins im
+ * Pool bidirektional sind (siehe Kommentar oben zu IO39/IO36). Eigene
+ * Funktion bleibt bestehen, falls der Pool kuenftig wieder Input-only-Pins
+ * enthalten sollte. */
 bool app_config_gpio_supports_output(uint8_t pin);
 
 typedef struct {
@@ -85,7 +105,12 @@ typedef struct {
     bool     retain_reed_state;
     bool     retain_relay_state;
 
-    // Relais
+    // Relais. relay_enabled=false: relay_control_init() wird nicht
+    // aufgerufen, der GPIO-Pin bleibt unkonfiguriert und relay_control_set()
+    // ist ein no-op (siehe relay_control.c). lock_control.c laeuft
+    // trotzdem weiter (fuer den Fall, dass nur der Pin noch fehlt), schaltet
+    // dabei aber effektiv nichts.
+    bool     relay_enabled;
     uint32_t relay_pulse_ms;
     // true: Pulsdauer kommt zur Laufzeit per MQTT (topic_relay_pulse_ms,
     // retained, Payload = Millisekunden als Zahl-String), relay_pulse_ms
@@ -102,6 +127,13 @@ typedef struct {
     // gpio_reed waehlbar (Input mit internem Pull-Up, Kontakt gegen GND --
     // geschlossen = LOW). Publiziert retained bei jedem Statuswechsel UND
     // einmalig beim Start, Payload "closed"/"open".
+    // reed_enabled=false: reed_contact_init() wird nicht aufgerufen, UND
+    // lock_control.c ueberspringt die reed-abhaengige Halte-/Nachlauflogik
+    // komplett (sonst wuerde das Relais nach jedem Zutritt fuer immer
+    // aktiv bleiben, da reed_contact_is_closed() ohne laufende Task nie
+    // true liefert) -- Relais schaltet dann nur noch den einfachen
+    // Basis-Puls wie vor Einfuehrung der Reedkontakt-Logik.
+    bool     reed_enabled;
     char     topic_reed_state[APP_CFG_STR_LEN];
 
     // Lock-Control (siehe lock_control.c): haelt das Relais nach einem
@@ -131,6 +163,10 @@ typedef struct {
     // Neustart (siehe main.c:app_main()).
     bool     pn532_raw_bridge_mode;
     uint16_t pn532_bridge_tcp_port;
+    // pn532_enabled=false: pn532_init_task() (main.c) beendet sich sofort,
+    // ohne UART/SAM/Polling/Bridge zu starten -- fuer Bring-up/Tests von
+    // Relais/Reedkontakt/Schalter ohne angeschlossenes PN532-Modul.
+    bool     pn532_enabled;
 
     // GPIO-Zuordnung, ueber die WebGUI aus APP_CFG_GPIO_POOL waehlbar
     // (jeweils geprueft gegen app_config_gpio_in_pool()/

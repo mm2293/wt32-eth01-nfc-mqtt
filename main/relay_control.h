@@ -27,7 +27,9 @@ esp_err_t relay_control_init(uint32_t pulse_ms, gpio_num_t pin);
  * hinaus gehalten zu koennen (z.B. solange die Tuer laut Reedkontakt noch
  * nicht wieder in Schliessposition ist). Meldet den neuen Zustand
  * zusaetzlich per MQTT (siehe mqtt_client_setup_publish_relay_state(),
- * Topic nfc/relay_state). */
+ * Topic nfc/relay_state). Ist relay_control_init() nie aufgerufen worden
+ * (siehe app_config.h:relay_enabled), ist dies ein no-op (nur Log-Warnung,
+ * kein GPIO-Zugriff, kein MQTT-Publish). */
 void relay_control_set(bool energized);
 
 /* Aendert die Basis-Pulsdauer zur Laufzeit, z.B. wenn das Addon sie per
