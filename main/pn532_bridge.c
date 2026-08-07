@@ -7,72 +7,149 @@
 #include "driver/uart.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "lwip/sockets.h"
 #include "lwip/inet.h"
 
 static const char *TAG = "pn532_bridge";
 
 #define BRIDGE_BUF_SIZE 512
-// Kurze Poll-Timeouts auf beiden Seiten (UART-Read, select() auf dem Socket)
-// statt langem Blockieren -- damit ein Verbindungsabbruch zuegig erkannt und
-// der Server-Loop fuer den naechsten Client wieder frei wird.
-#define BRIDGE_POLL_MS 50
+// Wie oft uart_to_tcp_task() spaetestens aus dem blockierenden UART-Read
+// aufwacht, um session->stop zu pruefen -- betrifft NUR, wie zuegig ein
+// Verbindungsende erkannt wird, NICHT die Befehlslatenz: anders als in der
+// frueheren Round-Robin-Schleife (siehe Historie unten) wartet diese Seite
+// nie auf die TCP-Richtung, ein hoher Wert hier kostet also keine
+// Kommando-Latenz mehr.
+#define UART_READ_POLL_MS 50
 
 static uint16_t s_tcp_port;
 
-/* Pumpt Rohbytes bidirektional zwischen der PN532-UART und dem verbundenen
- * TCP-Client, bis eine Seite die Verbindung schliesst oder ein Fehler
- * auftritt. Keine Interpretation der Bytes -- reine Bruecke, siehe
- * pn532_bridge.h. */
-static void pump_bytes(int client_fd)
+/* Zustand einer einzelnen Client-Verbindung, geteilt zwischen den beiden
+ * Pump-Tasks (siehe unten). stop wird von der Seite gesetzt, die zuerst ein
+ * Verbindungsende/-fehler bemerkt; die jeweils andere Seite entdeckt das
+ * spaetestens beim naechsten eigenen Timeout/Datenempfang. done_sem zaehlt
+ * die beendeten Tasks hoch, damit bridge_server_task() sicher warten kann,
+ * bis BEIDE Tasks fertig sind, bevor der Socket geschlossen und der naechste
+ * Client akzeptiert wird (sonst Use-after-free/Doppel-Close-Risiko). */
+typedef struct {
+    int client_fd;
+    uart_port_t uart_port;
+    volatile bool stop;
+    SemaphoreHandle_t done_sem;
+} bridge_session_t;
+
+/* UART -> TCP: blockiert auf der UART, leitet jeden Brocken sofort per
+ * send() weiter. Reagiert auf ankommende PN532-Antworten/ACKs ohne auf die
+ * TCP-Richtung zu warten -- das ist der eigentliche Fix gegenueber der
+ * frueheren Ein-Task-Round-Robin-Schleife (siehe Git-Historie: "Raw-Bridge:
+ * Poll-Intervall von 50ms auf 2ms verkleinern"/dessen kompletter Revert):
+ * dort blockierte ein einzelner Task abwechselnd auf UART-Read und
+ * TCP-select(), sodass ankommende Host-Kommandos im schlechtesten Fall bis
+ * zu BRIDGE_POLL_MS warten mussten, bis der Task ueberhaupt wieder auf die
+ * TCP-Seite schaute. Mit getrennten Tasks pro Richtung gibt es dieses
+ * Kopf-an-Kopf-Warten strukturell nicht mehr -- und ohne kurze
+ * Poll-Intervalle brauchte es auch keine FreeRTOS-Tick-Rate-Erhoehung wie
+ * beim vorherigen (revertierten) Versuch. */
+static void uart_to_tcp_task(void *pvParameters)
+{
+    bridge_session_t *session = (bridge_session_t *)pvParameters;
+    uint8_t buf[BRIDGE_BUF_SIZE];
+
+    while (!session->stop) {
+        int uart_len = uart_read_bytes(session->uart_port, buf, sizeof(buf),
+                                        pdMS_TO_TICKS(UART_READ_POLL_MS));
+        if (uart_len > 0) {
+            if (send(session->client_fd, buf, uart_len, 0) < 0) {
+                ESP_LOGI(TAG, "uart_to_tcp_task: Client getrennt (send fehlgeschlagen: errno=%d)", errno);
+                break;
+            }
+        } else if (uart_len < 0) {
+            ESP_LOGW(TAG, "uart_to_tcp_task: uart_read_bytes fehlgeschlagen");
+            break;
+        }
+    }
+
+    session->stop = true;
+    // Weckt tcp_to_uart_task() sofort aus einem evtl. blockierenden recv()
+    // auf (siehe dort) -- ohne das koennte diese Seite hier fertig sein,
+    // waehrend die andere auf ewig auf den (nun toten) Client wartet.
+    shutdown(session->client_fd, SHUT_RDWR);
+    xSemaphoreGive(session->done_sem);
+    vTaskDelete(NULL);
+}
+
+/* TCP -> UART: blockiert unbegrenzt auf recv() (kein Timeout noetig/sinnvoll
+ * -- Host-Kommandos kommen unregelmaessig, ein Timeout wuerde hier nur
+ * unnoetige Wachphasen erzeugen), leitet jeden Brocken sofort per
+ * uart_write_bytes() weiter. */
+static void tcp_to_uart_task(void *pvParameters)
+{
+    bridge_session_t *session = (bridge_session_t *)pvParameters;
+    uint8_t buf[BRIDGE_BUF_SIZE];
+
+    while (!session->stop) {
+        int tcp_len = recv(session->client_fd, buf, sizeof(buf), 0);
+        if (tcp_len > 0) {
+            uart_write_bytes(session->uart_port, (const char *)buf, tcp_len);
+        } else if (tcp_len == 0) {
+            ESP_LOGI(TAG, "tcp_to_uart_task: Client hat die Verbindung geschlossen");
+            break;
+        } else {
+            if (session->stop) {
+                // Erwarteter Rueckweg des shutdown() aus uart_to_tcp_task()
+                // oben -- kein eigenstaendiger Fehler.
+                break;
+            }
+            ESP_LOGI(TAG, "tcp_to_uart_task: Client getrennt (recv fehlgeschlagen: errno=%d)", errno);
+            break;
+        }
+    }
+
+    session->stop = true;
+    xSemaphoreGive(session->done_sem);
+    vTaskDelete(NULL);
+}
+
+/* Startet beide Pump-Tasks fuer eine Client-Verbindung und wartet, bis
+ * BEIDE sich beendet haben (Verbindungsende/-fehler, siehe oben), bevor sie
+ * zurueckkehrt -- danach ist der Socket sicher zum Schliessen frei. */
+static void run_bridge_session(int client_fd)
 {
     uart_port_t uart_port = pn532_uart_get_port();
-    uint8_t buf[BRIDGE_BUF_SIZE];
 
     // Reste aus einer vorherigen Sitzung (z.B. ECP-Broadcast-Antworten aus
     // dem Managed-Modus vor dem Umschalten) verwerfen, damit der Client mit
     // einem sauberen Strom startet.
     uart_flush_input(uart_port);
 
-    while (1) {
-        // UART -> TCP
-        int uart_len = uart_read_bytes(uart_port, buf, sizeof(buf), pdMS_TO_TICKS(BRIDGE_POLL_MS));
-        if (uart_len > 0) {
-            int sent = send(client_fd, buf, uart_len, 0);
-            if (sent < 0) {
-                ESP_LOGI(TAG, "Client getrennt (send fehlgeschlagen: errno=%d)", errno);
-                return;
-            }
-        } else if (uart_len < 0) {
-            ESP_LOGW(TAG, "uart_read_bytes fehlgeschlagen");
-            return;
-        }
+    // Nagle/Delayed-ACK auf dem Bridge-Socket kann bei zeitkritischen
+    // Nested-Attack-Tools (mfoc) das Timing zwischen aufeinanderfolgenden
+    // Auth-Kommandos stoeren -- ergaenzt das passende nodelay auf der
+    // Client-Seite (siehe ha-nfc-addon-Repo: pn532_driver.py/
+    // raw_bridge_manager.py).
+    int nodelay = 1;
+    setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
-        // TCP -> UART: kurzer select() statt blockierendem recv(), damit
-        // diese Schleife weiterhin regelmaessig auch die UART-Richtung
-        // bedient, statt beliebig lange auf Client-Daten zu warten.
-        fd_set read_fds;
-        FD_ZERO(&read_fds);
-        FD_SET(client_fd, &read_fds);
-        struct timeval tv = { .tv_sec = 0, .tv_usec = BRIDGE_POLL_MS * 1000 };
-
-        int sel = select(client_fd + 1, &read_fds, NULL, NULL, &tv);
-        if (sel > 0 && FD_ISSET(client_fd, &read_fds)) {
-            int tcp_len = recv(client_fd, buf, sizeof(buf), 0);
-            if (tcp_len > 0) {
-                uart_write_bytes(uart_port, (const char *)buf, tcp_len);
-            } else if (tcp_len == 0) {
-                ESP_LOGI(TAG, "Client hat die Verbindung geschlossen");
-                return;
-            } else {
-                ESP_LOGI(TAG, "Client getrennt (recv fehlgeschlagen: errno=%d)", errno);
-                return;
-            }
-        } else if (sel < 0) {
-            ESP_LOGW(TAG, "select() fehlgeschlagen: errno=%d", errno);
-            return;
-        }
+    bridge_session_t session = {
+        .client_fd = client_fd,
+        .uart_port = uart_port,
+        .stop = false,
+        .done_sem = xSemaphoreCreateCounting(2, 0),
+    };
+    if (session.done_sem == NULL) {
+        ESP_LOGE(TAG, "run_bridge_session: xSemaphoreCreateCounting fehlgeschlagen");
+        return;
     }
+
+    // Gleiche Prioritaet wie der Server-Task selbst (siehe
+    // pn532_bridge_start()) -- beide sind waehrend einer aktiven Sitzung
+    // gleichermassen zeitkritisch, keine soll die andere verdraengen.
+    xTaskCreate(uart_to_tcp_task, "bridge_u2t", 4096, &session, 5, NULL);
+    xTaskCreate(tcp_to_uart_task, "bridge_t2u", 4096, &session, 5, NULL);
+
+    xSemaphoreTake(session.done_sem, portMAX_DELAY);
+    xSemaphoreTake(session.done_sem, portMAX_DELAY);
+    vSemaphoreDelete(session.done_sem);
 }
 
 static void bridge_server_task(void *pvParameters)
@@ -125,7 +202,7 @@ static void bridge_server_task(void *pvParameters)
         inet_ntoa_r(client_addr.sin_addr, ip_str, sizeof(ip_str));
         ESP_LOGI(TAG, "Client verbunden: %s:%d", ip_str, ntohs(client_addr.sin_port));
 
-        pump_bytes(client_fd);
+        run_bridge_session(client_fd);
 
         close(client_fd);
         ESP_LOGI(TAG, "Client-Verbindung beendet, warte auf naechste Verbindung");
