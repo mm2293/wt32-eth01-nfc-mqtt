@@ -23,6 +23,14 @@
  *                                    wartet, bevor die Karte freigegeben wird.
  *                                    Volle Kontrolle liegt beim Addon (z.B. hoch
  *                                    beim Oeffnen der interaktiven NFC-Shell).
+ *   nfc/lock_reed_state (ESP32 -> Addon, retained) Payload "closed"/"open",
+ *                                    siehe reed_contact.c -- Status des am
+ *                                    Schloss angebrachten Reedkontakts (IO2).
+ *
+ * Topic-Namen (ausser dem fest kodierten nfc/apdu_relay_timeout_ms) sowie
+ * QoS je Topic, Retain-Flag fuer die drei ESP32->Addon-Topics und die
+ * Clean-Session-Einstellung sind ueber die WebGUI (web_config.c) konfigurierbar,
+ * siehe app_config.h.
  */
 
 #include "mqtt_client_setup.h"
@@ -38,7 +46,9 @@
 #include "freertos/queue.h"
 
 #include "relay_control.h"
+#include "lock_control.h"
 #include "pn532_uart.h"
+#include "app_config.h"
 
 static const char *TAG = "mqtt_client_setup";
 
@@ -52,13 +62,34 @@ static char s_topic_incoming_apdu_cmd[TOPIC_LEN];
 static char s_topic_outgoing_apdu_resp[TOPIC_LEN];
 static char s_topic_incoming_homekey_group_id[TOPIC_LEN];
 static char s_topic_incoming_relay_pulse_ms[TOPIC_LEN];
+static char s_topic_outgoing_reed_state[TOPIC_LEN];
+static char s_topic_incoming_lock_settle_ms[TOPIC_LEN];
 static bool s_relay_pulse_via_mqtt = false;
+static bool s_lock_settle_via_mqtt = false;
 static bool s_raw_bridge_mode = false;
+
+// QoS je Topic und Retain-Flag fuer die drei ESP32->Addon-Topics, ebenfalls
+// aus app_config_t befuellt (siehe mqtt_client_setup_init()) -- vormals an
+// den jeweiligen subscribe()/publish()-Aufrufen fest kodierte Zahlen.
+static uint8_t s_qos_raw;
+static uint8_t s_qos_apdu_cmd;
+static uint8_t s_qos_apdu_resp;
+static uint8_t s_qos_result;
+static uint8_t s_qos_homekey_group_id;
+static uint8_t s_qos_relay_pulse_ms;
+static uint8_t s_qos_apdu_relay_timeout_ms;
+static uint8_t s_qos_reed_state;
+static uint8_t s_qos_lock_settle_ms;
+static bool s_retain_raw;
+static bool s_retain_apdu_resp;
+static bool s_retain_reed_state;
 
 // Fest kodiertes (nicht ueber WebGUI/NVS konfigurierbares) Topic -- das
 // Addon steuert den APDU-Relay-Timeout vollstaendig selbst (z.B. hoch beim
 // Oeffnen der NFC-Shell, wieder runter beim Schliessen), siehe
-// mqtt_client_setup_get_apdu_relay_timeout_ms() und PROTOCOL.md.
+// mqtt_client_setup_get_apdu_relay_timeout_ms() und PROTOCOL.md. Nur die
+// Subscribe-QoS (s_qos_apdu_relay_timeout_ms) ist ueber die WebGUI
+// konfigurierbar, der Topic-Name selbst nicht.
 #define TOPIC_APDU_RELAY_TIMEOUT_MS "nfc/apdu_relay_timeout_ms"
 #define APDU_RELAY_TIMEOUT_DEFAULT_MS 3000
 static uint32_t s_apdu_relay_timeout_ms = APDU_RELAY_TIMEOUT_DEFAULT_MS;
@@ -162,11 +193,22 @@ static void handle_relay_pulse_ms_message(const char *payload)
 {
     char *endptr = NULL;
     long ms = strtol(payload, &endptr, 10);
-    if (endptr == payload || ms < 50 || ms > 10000) {
+    if (endptr == payload || ms < (long)RELAY_PULSE_MS_MIN || ms > (long)RELAY_PULSE_MS_MAX) {
         ESP_LOGW(TAG, "relay_pulse_ms mit ungueltigem Wert ignoriert: %s", payload);
         return;
     }
     relay_control_set_pulse_ms((uint32_t)ms);
+}
+
+static void handle_lock_settle_delay_ms_message(const char *payload)
+{
+    char *endptr = NULL;
+    long ms = strtol(payload, &endptr, 10);
+    if (endptr == payload || ms < (long)LOCK_SETTLE_DELAY_MS_MIN || ms > (long)LOCK_SETTLE_DELAY_MS_MAX) {
+        ESP_LOGW(TAG, "lock_settle_delay_ms mit ungueltigem Wert ignoriert: %s", payload);
+        return;
+    }
+    lock_control_set_settle_delay_ms((uint32_t)ms);
 }
 
 static void handle_apdu_relay_timeout_ms_message(const char *payload)
@@ -191,8 +233,12 @@ static void handle_result_message(const char *payload)
 
     cJSON *granted = cJSON_GetObjectItem(json, "granted");
     if (cJSON_IsTrue(granted)) {
-        ESP_LOGI(TAG, "Zutritt gewaehrt, schalte Relais");
-        relay_control_pulse();
+        ESP_LOGI(TAG, "Zutritt gewaehrt, benachrichtige Lock-Control");
+        // Nicht blockierend (siehe lock_control.c) -- der eigentliche
+        // Relais-/Reedkontakt-Ablauf laeuft in einer eigenen Task, damit
+        // dieser MQTT-Event-Handler-Task nicht fuer die (potenziell lange)
+        // Dauer des Haltevorgangs blockiert.
+        lock_control_notify_granted();
     } else {
         ESP_LOGI(TAG, "Zutritt verweigert");
     }
@@ -228,22 +274,27 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT verbunden, abonniere %s, %s und %s",
                      s_topic_incoming_result, s_topic_incoming_apdu_cmd, s_topic_incoming_homekey_group_id);
-            esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_result, 1);
-            // QoS 0 bewusst: nfc/apdu_cmd wird pro Kartenvorgang mehrfach
-            // (einmal je APDU) durchgereicht, oft innerhalb eines engen
+            esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_result, s_qos_result);
+            // QoS 0 als Default bewusst (siehe app_config.c:DEFAULT_QOS_APDU_CMD,
+            // ueber die WebGUI aenderbar): nfc/apdu_cmd wird pro Kartenvorgang
+            // mehrfach (einmal je APDU) durchgereicht, oft innerhalb eines engen
             // Zeitfensters, das Karte/Handy fuer die laufende NFC-Transaktion
             // offenhalten. QoS 1 wuerde auf JEDEM Hop (Broker<->Client) eine
             // zusaetzliche PUBACK-Bestaetigung erzwingen -- Latenz, die hier
             // nichts bringt, da ein verlorenes APDU ohnehin ueber das eigene
             // Timeout auf Addon-Seite (mqtt_bridge.py) erkannt wird, nicht
             // durch MQTT-Zustellgarantien.
-            esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_apdu_cmd, 0);
+            esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_apdu_cmd, s_qos_apdu_cmd);
             // Retained: liefert beim (Wieder-)Verbinden sofort den zuletzt vom
             // Addon veroeffentlichten Wert nach, auch nach einem ESP32-Reboot.
-            esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_homekey_group_id, 1);
+            esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_homekey_group_id, s_qos_homekey_group_id);
             if (s_relay_pulse_via_mqtt) {
                 ESP_LOGI(TAG, "Abonniere zusaetzlich %s (Relais-Pulsdauer)", s_topic_incoming_relay_pulse_ms);
-                esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_relay_pulse_ms, 1);
+                esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_relay_pulse_ms, s_qos_relay_pulse_ms);
+            }
+            if (s_lock_settle_via_mqtt) {
+                ESP_LOGI(TAG, "Abonniere zusaetzlich %s (Schloss-Nachlaufzeit)", s_topic_incoming_lock_settle_ms);
+                esp_mqtt_client_subscribe(s_mqtt_client, s_topic_incoming_lock_settle_ms, s_qos_lock_settle_ms);
             }
             // Retained, im Managed-Modus immer abonniert (kein eigenes
             // Enable/Disable-Toggle wie bei relay_pulse_ms) -- das Addon
@@ -253,7 +304,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
             // nicht, siehe main.c/PROTOCOL.md) -- daher hier uebersprungen.
             if (!s_raw_bridge_mode) {
                 ESP_LOGI(TAG, "Abonniere zusaetzlich %s (APDU-Relay-Timeout)", TOPIC_APDU_RELAY_TIMEOUT_MS);
-                esp_mqtt_client_subscribe(s_mqtt_client, TOPIC_APDU_RELAY_TIMEOUT_MS, 1);
+                esp_mqtt_client_subscribe(s_mqtt_client, TOPIC_APDU_RELAY_TIMEOUT_MS, s_qos_apdu_relay_timeout_ms);
             }
             break;
 
@@ -291,6 +342,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
                 handle_homekey_group_id_message(payload);
             } else if (s_relay_pulse_via_mqtt && strcmp(topic, s_topic_incoming_relay_pulse_ms) == 0) {
                 handle_relay_pulse_ms_message(payload);
+            } else if (s_lock_settle_via_mqtt && strcmp(topic, s_topic_incoming_lock_settle_ms) == 0) {
+                handle_lock_settle_delay_ms_message(payload);
             } else if (strcmp(topic, TOPIC_APDU_RELAY_TIMEOUT_MS) == 0) {
                 handle_apdu_relay_timeout_ms_message(payload);
             }
@@ -303,24 +356,43 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
     }
 }
 
-esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, const char *password,
-                                  const char *client_id,
-                                  const char *topic_raw, const char *topic_apdu_cmd,
-                                  const char *topic_apdu_resp, const char *topic_result,
-                                  const char *topic_homekey_group_id,
-                                  bool relay_pulse_via_mqtt, const char *topic_relay_pulse_ms,
-                                  bool pn532_raw_bridge_mode)
+esp_err_t mqtt_client_setup_init(const app_config_t *cfg)
 {
     s_session_queue = xQueueCreate(8, sizeof(session_queue_item_t));
 
-    strncpy(s_topic_outgoing_raw, topic_raw, TOPIC_LEN - 1);
-    strncpy(s_topic_incoming_apdu_cmd, topic_apdu_cmd, TOPIC_LEN - 1);
-    strncpy(s_topic_outgoing_apdu_resp, topic_apdu_resp, TOPIC_LEN - 1);
-    strncpy(s_topic_incoming_result, topic_result, TOPIC_LEN - 1);
-    strncpy(s_topic_incoming_homekey_group_id, topic_homekey_group_id, TOPIC_LEN - 1);
-    s_relay_pulse_via_mqtt = relay_pulse_via_mqtt;
-    strncpy(s_topic_incoming_relay_pulse_ms, topic_relay_pulse_ms, TOPIC_LEN - 1);
-    s_raw_bridge_mode = pn532_raw_bridge_mode;
+    strncpy(s_topic_outgoing_raw, cfg->topic_raw, TOPIC_LEN - 1);
+    strncpy(s_topic_incoming_apdu_cmd, cfg->topic_apdu_cmd, TOPIC_LEN - 1);
+    strncpy(s_topic_outgoing_apdu_resp, cfg->topic_apdu_resp, TOPIC_LEN - 1);
+    strncpy(s_topic_incoming_result, cfg->topic_result, TOPIC_LEN - 1);
+    strncpy(s_topic_incoming_homekey_group_id, cfg->topic_homekey_group_id, TOPIC_LEN - 1);
+    s_relay_pulse_via_mqtt = cfg->relay_pulse_via_mqtt;
+    strncpy(s_topic_incoming_relay_pulse_ms, cfg->topic_relay_pulse_ms, TOPIC_LEN - 1);
+    strncpy(s_topic_outgoing_reed_state, cfg->topic_reed_state, TOPIC_LEN - 1);
+    s_lock_settle_via_mqtt = cfg->lock_settle_delay_via_mqtt;
+    strncpy(s_topic_incoming_lock_settle_ms, cfg->topic_lock_settle_delay_ms, TOPIC_LEN - 1);
+    s_raw_bridge_mode = cfg->pn532_raw_bridge_mode;
+
+    s_qos_raw = cfg->qos_raw;
+    s_qos_apdu_cmd = cfg->qos_apdu_cmd;
+    s_qos_apdu_resp = cfg->qos_apdu_resp;
+    s_qos_result = cfg->qos_result;
+    s_qos_homekey_group_id = cfg->qos_homekey_group_id;
+    s_qos_relay_pulse_ms = cfg->qos_relay_pulse_ms;
+    s_qos_apdu_relay_timeout_ms = cfg->qos_apdu_relay_timeout_ms;
+    s_qos_reed_state = cfg->qos_reed_state;
+    s_qos_lock_settle_ms = cfg->qos_lock_settle_ms;
+    s_retain_raw = cfg->retain_raw;
+    s_retain_apdu_resp = cfg->retain_apdu_resp;
+    s_retain_reed_state = cfg->retain_reed_state;
+
+    if (!cfg->mqtt_clean_session && cfg->mqtt_client_id[0] == '\0') {
+        // Persistent Session ohne feste Client-ID ist wirkungslos: esp-mqtt
+        // laesst den Broker sonst bei jedem Verbindungsaufbau eine neue,
+        // zufaellige Client-ID vergeben -- der Broker kann die vorherige
+        // Session dann nie wiederfinden.
+        ESP_LOGW(TAG, "Clean Session deaktiviert, aber keine feste MQTT-Client-ID gesetzt -- "
+                      "Persistent Session wirkt so nicht, siehe WebGUI");
+    }
 
     // Default-Puffergroesse von esp-mqtt (1024 Byte) reicht seit
     // MQTT_APDU_MAX_LEN=2048 nicht mehr fuer ein hex-kodiertes apdu_cmd/
@@ -329,10 +401,11 @@ esp_err_t mqtt_client_setup_init(const char *broker_uri, const char *username, c
     // vom lokalen payload-Puffer oben.
     size_t mqtt_buffer_size = MQTT_APDU_MAX_LEN * 2 + 256;
     esp_mqtt_client_config_t mqtt_cfg = {
-        .broker.address.uri = broker_uri,
-        .credentials.username = username,
-        .credentials.authentication.password = password,
-        .credentials.client_id = (client_id != NULL && client_id[0] != '\0') ? client_id : NULL,
+        .broker.address.uri = cfg->mqtt_broker_uri,
+        .credentials.username = cfg->mqtt_username,
+        .credentials.authentication.password = cfg->mqtt_password,
+        .credentials.client_id = (cfg->mqtt_client_id[0] != '\0') ? cfg->mqtt_client_id : NULL,
+        .session.disable_clean_session = !cfg->mqtt_clean_session,
         .buffer.size = mqtt_buffer_size,
         .buffer.out_size = mqtt_buffer_size,
     };
@@ -372,7 +445,8 @@ void mqtt_client_setup_publish_card(const uint8_t *uid, uint8_t uid_len, uint8_t
     char *payload = cJSON_PrintUnformatted(json);
     ESP_LOGI(TAG, "Sende Kartendaten: %s", payload);
 
-    esp_mqtt_client_publish(s_mqtt_client, s_topic_outgoing_raw, payload, 0, 1, 0);
+    esp_mqtt_client_publish(s_mqtt_client, s_topic_outgoing_raw, payload, 0,
+                             s_qos_raw, s_retain_raw ? 1 : 0);
 
     free(payload);
     cJSON_Delete(json);
@@ -403,9 +477,25 @@ void mqtt_client_setup_publish_apdu_response(uint32_t session_id, bool ok,
     }
 
     char *payload = cJSON_PrintUnformatted(json);
-    esp_mqtt_client_publish(s_mqtt_client, s_topic_outgoing_apdu_resp, payload, 0, 0, 0);  // QoS 0, siehe Kommentar bei der Subscription
+    // Default QoS 0, siehe Kommentar bei der apdu_cmd-Subscription -- ueber
+    // die WebGUI konfigurierbar (s_qos_apdu_resp).
+    esp_mqtt_client_publish(s_mqtt_client, s_topic_outgoing_apdu_resp, payload, 0,
+                             s_qos_apdu_resp, s_retain_apdu_resp ? 1 : 0);
     free(payload);
     cJSON_Delete(json);
+}
+
+void mqtt_client_setup_publish_reed_state(bool closed)
+{
+    if (s_mqtt_client == NULL) {
+        ESP_LOGW(TAG, "MQTT-Client noch nicht initialisiert, ueberspringe Reed-Status-Publish");
+        return;
+    }
+
+    const char *payload = closed ? "closed" : "open";
+    ESP_LOGI(TAG, "Reedkontakt-Status: %s", payload);
+    esp_mqtt_client_publish(s_mqtt_client, s_topic_outgoing_reed_state, payload, 0,
+                             s_qos_reed_state, s_retain_reed_state ? 1 : 0);
 }
 
 bool mqtt_client_setup_wait_apdu_cmd(uint32_t session_id, mqtt_apdu_cmd_t *out_cmd,

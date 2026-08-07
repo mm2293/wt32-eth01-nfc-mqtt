@@ -37,6 +37,38 @@ typedef struct {
     char     topic_result[APP_CFG_STR_LEN];
     char     topic_homekey_group_id[APP_CFG_STR_LEN];
 
+    // MQTT: Clean Session -- Verbindungsweite Einstellung (MQTT kennt das
+    // nur pro Client, nicht pro Topic). true (Standard, bisheriges
+    // Verhalten): der Broker verwirft Subscriptions und noch nicht
+    // zugestellte QoS>0-Nachrichten, sobald die Verbindung getrennt wird.
+    // false: "Persistent Session" -- der Broker haelt beides ueber
+    // Trennungen hinweg vor, bis der Client mit derselben Client-ID wieder
+    // verbindet. Braucht dafuer eine feste (nicht-leere) mqtt_client_id,
+    // sonst vergibt esp-mqtt bei jedem Verbindungsaufbau eine neue.
+    bool     mqtt_clean_session;
+
+    // MQTT: QoS (0-2) je Topic, individuell ueber die WebGUI einstellbar.
+    // Bei ESP32->Addon-Topics (raw/apdu_resp/reed_state) ist es die
+    // Publish-QoS, bei Addon->ESP32-Topics (apdu_cmd/result/
+    // homekey_group_id/relay_pulse_ms/apdu_relay_timeout_ms) die
+    // Subscribe-QoS. Defaults entsprechen dem bisherigen fest kodierten
+    // Verhalten (siehe mqtt_client_setup.c).
+    uint8_t  qos_raw;
+    uint8_t  qos_apdu_cmd;
+    uint8_t  qos_apdu_resp;
+    uint8_t  qos_result;
+    uint8_t  qos_homekey_group_id;
+    uint8_t  qos_relay_pulse_ms;
+    uint8_t  qos_apdu_relay_timeout_ms;
+    uint8_t  qos_reed_state;
+
+    // MQTT: Retain-Flag beim Publish -- nur fuer ESP32->Addon-Topics
+    // relevant, bei Subscribe-only-Topics bestimmt der Publisher (Addon)
+    // das Retain-Flag, nicht die Firmware.
+    bool     retain_raw;
+    bool     retain_apdu_resp;
+    bool     retain_reed_state;
+
     // Relais
     uint32_t relay_pulse_ms;
     // true: Pulsdauer kommt zur Laufzeit per MQTT (topic_relay_pulse_ms,
@@ -45,6 +77,31 @@ typedef struct {
     // false: relay_pulse_ms wird fest verwendet (Standardverhalten).
     bool     relay_pulse_via_mqtt;
     char     topic_relay_pulse_ms[APP_CFG_STR_LEN];
+
+    // Reedkontakt (Tuer-/Schlossstatus, siehe reed_contact.c). Fest
+    // verdrahtet auf IO2 (Input mit internem Pull-Up, Kontakt gegen GND --
+    // geschlossen = LOW). Publiziert retained bei jedem Statuswechsel UND
+    // einmalig beim Start, Payload "closed"/"open".
+    char     topic_reed_state[APP_CFG_STR_LEN];
+
+    // Lock-Control (siehe lock_control.c): haelt das Relais nach einem
+    // granted:true-Zutrittsvorgang so lange aktiv, wie der Reedkontakt
+    // "nicht geschlossen" meldet, plus dieser Nachlaufzeit nach dem
+    // Wiederschliessen.
+    uint32_t lock_settle_delay_ms;
+    // Analog relay_pulse_via_mqtt: true = Nachlaufzeit kommt zur Laufzeit
+    // per MQTT (topic_lock_settle_delay_ms, retained, Payload = ms als
+    // Zahl-String), lock_settle_delay_ms dient dabei nur als Fallback bis
+    // zur ersten empfangenen Nachricht. false = lock_settle_delay_ms wird
+    // fest verwendet.
+    bool     lock_settle_delay_via_mqtt;
+    char     topic_lock_settle_delay_ms[APP_CFG_STR_LEN];
+    uint8_t  qos_lock_settle_ms;
+    // Sicherheits-Obergrenze (siehe lock_control.h) -- bewusst NICHT per
+    // MQTT ueberschreibbar, nur ueber die WebGUI, damit ein fehlerhaftes/
+    // kompromittiertes Addon diesen Ueberhitzungsschutz nicht per MQTT
+    // aushebeln kann.
+    uint32_t lock_max_hold_ms;
 
     // WebGUI-Login (HTTP Basic Auth, Benutzername fix "admin")
     char     admin_password[APP_CFG_STR_LEN];

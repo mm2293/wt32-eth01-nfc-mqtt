@@ -29,10 +29,33 @@ wird erst nach einem Neustart wirksam -- siehe `main.c:pn532_init_task()`):
   (niemand publiziert/konsumiert sie mehr).
 
 In BEIDEN Modi unveraendert aktiv: Relaissteuerung per MQTT
-(`nfc/result`/`nfc/relay_pulse_ms`) und die Mini-WebGUI. Da PN532/UART nur
-einen Master gleichzeitig erlauben, ist Raw-Bridge als manueller/temporaerer
-Wartungsmodus gedacht (Kartenanalyse, Key-Recovery per `mfoc`, ...), nicht
-als Dauerbetrieb parallel zur Zutrittssteuerung.
+(`nfc/result`/`nfc/relay_pulse_ms`), die reedkontakt-bewusste Halte-/
+Nachlauflogik (`nfc/lock_reed_state`/`nfc/lock_settle_delay_ms`, siehe
+unten) und die Mini-WebGUI. Da PN532/UART nur einen Master gleichzeitig
+erlauben, ist Raw-Bridge als manueller/temporaerer Wartungsmodus gedacht
+(Kartenanalyse, Key-Recovery per `mfoc`, ...), nicht als Dauerbetrieb
+parallel zur Zutrittssteuerung.
+
+## QoS, Retain und Clean Session
+
+Seit dem QoS/Retain-Umbau ist fuer praktisch jedes Topic ueber die WebGUI
+einstellbar, mit welcher QoS-Stufe (0-2) die Firmware es abonniert
+(Addon -> ESP32) bzw. publiziert (ESP32 -> Addon), und -- fuer die drei
+ESP32 -> Addon-Topics `nfc/raw`, `nfc/apdu_resp`, `nfc/lock_reed_state` --
+ob dabei das Retain-Flag gesetzt wird. Bei den Addon -> ESP32-Topics
+bestimmt weiterhin der Publisher (das Addon) das Retain-Flag, nicht die
+Firmware -- dort ist nur die Subscribe-QoS konfigurierbar.
+
+"Clean Session" ist dagegen eine verbindungsweite MQTT-Einstellung (kein
+Pro-Topic-Setting) und ebenfalls per WebGUI umschaltbar: aktiviert
+(Standard, bisheriges Verhalten) verwirft der Broker Subscriptions und
+noch nicht zugestellte QoS>0-Nachrichten bei jeder Trennung. Deaktiviert
+("Persistent Session") haelt der Broker beides ueber Trennungen hinweg vor,
+bis der Client mit derselben Client-ID erneut verbindet -- daher noetig:
+eine feste (nicht-leere) MQTT-Client-ID in der WebGUI, sonst vergibt
+esp-mqtt bei jedem Verbindungsaufbau eine neue zufaellige ID und der Broker
+kann die alte Session nie wiederfinden (die Firmware loggt in diesem Fall
+eine Warnung).
 
 ## Topics (nur im Managed-Modus relevant)
 
@@ -110,17 +133,25 @@ erkennt kein Geraet den Reader als "seinen".
 ### `nfc/relay_pulse_ms` (Addon -> ESP32, retained, optional)
 
 ```
-1500   (KEIN JSON -- reiner Zahl-String in Millisekunden als Payload, 50-10000)
+1500   (KEIN JSON -- reiner Zahl-String in Millisekunden als Payload)
 ```
 
-Nur relevant, wenn ueber die WebGUI (siehe README) "Pulsdauer per MQTT
-setzen" aktiviert wurde -- dann abonniert die Firmware dieses Topic
-zusaetzlich und uebernimmt jeden gueltigen Wert sofort per
-`relay_control_set_pulse_ms()` (siehe `relay_control.c`), OHNE ihn in NVS zu
-persistieren. Werte ausserhalb 50-10000 oder nicht-numerische Payloads werden
-mit einer Log-Warnung ignoriert, der zuletzt gueltige Wert bleibt bestehen.
-Ist die Option deaktiviert (Standard), wird dieses Topic gar nicht erst
-abonniert und die feste, ueber die WebGUI konfigurierte Pulsdauer gilt.
+Basis-Pulsdauer (Mindestdauer, bevor die reedkontakt-bewusste Halte-/
+Nachlauflogik greift, siehe `nfc/lock_reed_state`/`nfc/lock_settle_delay_ms`
+unten). Nur relevant, wenn ueber die WebGUI "Pulsdauer per MQTT setzen"
+aktiviert wurde -- dann abonniert die Firmware dieses Topic zusaetzlich und
+uebernimmt jeden gueltigen Wert sofort per `relay_control_set_pulse_ms()`
+(siehe `relay_control.c`), OHNE ihn in NVS zu persistieren. Ist die Option
+deaktiviert (Standard), wird dieses Topic gar nicht erst abonniert und die
+feste, ueber die WebGUI konfigurierte (in Sekunden angezeigte, intern in ms
+gespeicherte) Pulsdauer gilt.
+
+Werte werden auf `RELAY_PULSE_MS_MIN`..`RELAY_PULSE_MS_MAX` geklemmt (siehe
+`relay_control.h`, Stand dieses Dokuments: 50ms..24h) -- die frueher feste
+Obergrenze von 10s wurde entfernt, da sie kein funktionales Limit mehr ist,
+seit das eigentliche "wie lange bleibt das Relais an" durch den Reedkontakt
+bestimmt wird. Nicht-numerische Payloads werden mit einer Log-Warnung
+ignoriert, der zuletzt gueltige Wert bleibt bestehen.
 
 ### `nfc/apdu_relay_timeout_ms` (Addon -> ESP32, retained)
 
@@ -158,6 +189,57 @@ Sobald diese Nachricht eintrifft (mit oder ohne `session_id`-Feld -- falls
 vorhanden wird geprueft, ob sie zur aktuell offenen APDU-Relay-Session
 passt), beendet die Firmware die APDU-Relay-Schleife, gibt das Target frei
 (`InRelease`) und pollt sofort weiter.
+
+Bei `granted:true` benachrichtigt `handle_result_message()`
+(`mqtt_client_setup.c`) zusaetzlich `lock_control.c`
+(`lock_control_notify_granted()`, nicht blockierend) -- siehe
+`nfc/lock_reed_state`/`nfc/lock_settle_delay_ms` unten fuer den daraus
+resultierenden Relais-Ablauf.
+
+### `nfc/lock_reed_state` (ESP32 -> Addon, retained)
+
+```
+closed   (KEIN JSON -- reiner Text "closed" oder "open" als Payload)
+```
+
+Status des am Schloss angebrachten Reedkontakts (fest verdrahtet auf IO2,
+Input mit internem Pull-Up gegen GND -- geschlossener Kontakt = LOW =
+"closed"). Siehe `reed_contact.c`. Wird entprellt (3 aufeinanderfolgende
+stabile 50ms-Polls, siehe `REED_DEBOUNCE_STABLE_POLLS`) bei jedem
+Statuswechsel publiziert, sowie einmalig kurz nach dem Boot (erzwungener
+erster Publish, sobald der erste stabile Pegel vorliegt).
+
+### `nfc/lock_settle_delay_ms` (Addon -> ESP32, retained, optional)
+
+```
+5000   (KEIN JSON -- reiner Zahl-String in Millisekunden als Payload)
+```
+
+Steuert das Verhalten von `lock_control.c` nach einem gewaehrten Zutritt
+(`nfc/result` mit `granted:true`):
+
+1. Das Relais wird aktiviert und bleibt mindestens die Basis-Pulsdauer
+   (`nfc/relay_pulse_ms`/WebGUI) aktiv -- unveraendertes Verhalten.
+2. Danach bleibt das Relais WEITER aktiv, solange `nfc/lock_reed_state`
+   "nicht geschlossen" meldet (z.B. weil die Tuer noch offen steht) -- das
+   Schloss kann sonst mechanisch gar nicht in Schliessposition einrasten.
+   Sicherheits-Obergrenze dafuer: WebGUI-Feld "Sicherheits-Obergrenze fuers
+   Halten" (Default 5min, bewusst NICHT per MQTT ueberschreibbar, siehe
+   `LOCK_MAX_HOLD_MS_MIN/MAX` in `lock_control.h`) -- schuetzt Spule/Motor
+   vor Dauerbetrieb, falls die Tuer laenger aufgehalten wird. Wird die
+   Obergrenze erreicht, gibt die Firmware das Relais trotzdem frei und
+   loggt einen Fehler.
+3. Sobald `nfc/lock_reed_state` wieder "closed" meldet, wartet die Firmware
+   zusaetzlich `nfc/lock_settle_delay_ms` (diese Nachlaufzeit), bevor das
+   Relais tatsaechlich deaktiviert wird. Geht der Reedkontakt waehrend
+   dieser Nachlaufzeit erneut auf "open", beginnt Schritt 2 von vorn.
+
+Nur relevant, wenn ueber die WebGUI "Nachlaufzeit per MQTT setzen"
+aktiviert wurde -- analog zu `nfc/relay_pulse_ms`. Werte werden auf
+`LOCK_SETTLE_DELAY_MS_MIN/MAX` geklemmt (Default 0..10min, siehe
+`lock_control.h`). Wird NICHT in NVS persistiert. Ist die Option
+deaktiviert (Standard), wird dieses Topic gar nicht erst abonniert und die
+feste, ueber die WebGUI konfigurierte Nachlaufzeit (Default 5s) gilt.
 
 ## Bekannte Einschraenkung
 
